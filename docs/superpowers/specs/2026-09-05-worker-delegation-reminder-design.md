@@ -612,3 +612,48 @@ Tests: `tests/job.test.ts` (the paragraph present for a worktree record, absent 
 regenerated from the render (`identity-worker.md` unchanged), `tests/quick-hub-side-directive.test.ts`
 (the DETACHED MODE paragraph and the Stage 1 sentence inside their slices; the no-leak test
 unchanged). MUTATION (hub-run, each change reverted in turn in the worktree file, the named tests run, the file restored byte-identical): the job-brief paragraph removed → 1 red (`job.test.ts`); the block clause reverted to "before you park." → 2 red (`job-hub-template.test.ts`, the `identity-render` fixture); the DETACHED MODE paragraph removed → 1 red; the Stage 1 sentence removed → 1 red; restored → 89/89 green across the four files.
+
+## Amendment 2026-09-06 — implement's detached job hub (0.5.85)
+
+Two checkers read the DETACHED `/ap:implement` run — the origin's launch path, the job hub's run-path
+table and Stage 1P as it drives the lead and N slice workers — against the hub's delegation rule.
+Mechanically it holds: every job and implement verb re-reads disk, slice worktrees re-root to the main
+checkout, `slice-check` validates every task id the hub types, the absorb ISSUES block is
+verb-assembled, nothing hashes the hub's own pane, and the death probe excludes slices. Four findings,
+two of them Stage 1P protocol defects neither the attached check (0.5.78) nor quick's detached check
+(0.5.84) could see.
+
+**A second park loses a question.** Stage 1P is the only path where the hub keeps working while
+parked — it handles slice Monitors, and several of their arms park again. `jobProgress` defines
+"parked" as the newest outbox event only, and `job relay` sets its cursor to the whole snapshot: a
+second `question` appended before the first is relayed is consumed with it, `job status` prints
+`PARKED=no`, and the gate the hub is actually blocked on never reaches the operator. Fixed in the
+protocol the hub follows, in the identity block and at 1P.5: one park at a time.
+
+**No "your own turn" paragraph.** 0.5.84 mirrored nothing into implement.md, which never references
+quick.md, and detached implement has the most loop-shaped hub work in the platform.
+
+**The slice claim check answered about the wrong tree.** 1P.5 moved it to the slice's worktree, but
+Stage 1's recipe is cwd-relative for four of five claim kinds, the hub's cwd is the main checkout, and
+the brief's only path is the run worktree, which holds a slice's commits only after 1P.7. The Verdict
+landed verbatim in the slice's inbox as ground truth.
+
+**Batched roster writes race.** `abandon-slice` rewrites `slices.tsv` whole from a snapshot, and 1P.3
+said "one call per row" two paragraphs after teaching the hub to batch N calls in one message.
+
+Adjudicated skips: Step B's "the report" where a fanned-out run has N reports; the four `integrate`
+lines pasted verbatim with no anti-summary clause (the hub ran the verb); the block's own-shell pin
+clause, over-broad for implement's `verify-tests` (recorded in 0.5.84).
+
+| # | Decision | Choice |
+|---|---|---|
+| D48 | Implement DETACHED MODE | quick's D45 mirrored, adapted: the origin's `job wait` Monitor, the job hub's per-turn and per-slice Monitors, the `JS=`/`TS=` branches, AskUserQuestion and `job relay`, the park, every `send`/`turn-send`, and every rc-bearing `$CS` verb are never delegated; reading grind names the tree it is about, a slice's tree until 1P.7 |
+| D49 | Slice claim check | runs with cwd inside, or every path prefixed with, that slice's worktree — never the main checkout, never `TARGET_CWD`; the Verdict and any amended mandate are the hub's own, opened in that tree in this turn |
+| D50 | One park at a time | in the job-hub identity's park paragraph and at 1P.5: while a question is unanswered, no second one is appended — the arm holds its gate (noted in `RESUME.md`) and parks again after the answer lands; a directive rule because the hub is the only writer of its outbox |
+| D51 | Roster verbs | `abandon-slice`, `spawn-slices`, `slice-check` run one at a time, each its own tool call, never batched: each rewrites `slices.tsv` whole from the rows it read |
+
+Tests: `tests/implement-job-hub-directive.test.ts` (the paragraph inside DETACHED MODE, the three 1P.5
+additions inside Stage 1P, single-site uniqueness, and "own window" still absent);
+`tests/job-hub-template.test.ts` (the park clause); `tests/fixtures/identity-job-hub.md` regenerated
+from the render (`identity-worker.md` unchanged); the hub-side and parallel directive tests unchanged
+and green. MUTATION (hub-run, each change reverted in turn in the worktree file, the named tests run, the file restored byte-identical): the DETACHED MODE paragraph removed → 2 red; the 1P.5 slice-tree bullet removed → 1 red; the 1P.5 one-park sentence removed → 2 red; the 1P.3 roster sentence removed → 1 red; the identity clause removed → 2 red (`job-hub-template.test.ts`, the `identity-render` fixture); restored → 23/23 green across the three files.
