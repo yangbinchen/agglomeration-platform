@@ -143,6 +143,17 @@ Two further rules:
 - **Rounds exhausted.** Stage 2's `VERDICT: FAIL` with `ROUND > MAX_ROUNDS` writes `RESUME.md` and
   PARKS rather than aborting — the branch and its work survive for the operator.
 
+**Driving the run is your own turn, on either side.** The Monitors — the origin's `job wait` loop, the
+job hub's `turn-wait` per named turn and per slice — and the `JS=`/`TS=` branches they feed,
+AskUserQuestion and `job relay` on the origin side, the park and every `send` and `turn-send` on the
+job-hub side, and every `$CS` verb whose rc you branch on (`init`, `slice-check`, `spawn-slices` with
+its `timeout: 600000` floor, `slice-gate`, `budget-check`, `integrate`, `verify-tests`, `scope-check`,
+`finish`, `stop`) are never delegated: a subagent cannot ask the user, cannot relay, its backgrounded
+waits die with it, and its report of a verb's output is not the verb's rc. Reading the lead's plan, a
+slice's report, a verify log or `integrate`'s rows is the grind you may dispatch — with the tree it is
+about named absolutely in the brief, since a job hub's pane stands in the main checkout and a slice's
+work lives in `<repo>/.ap/worktrees/<TOPIC>.<agent>` until 1P.7 merges it.
+
 ## Progress tracking
 
 Maintain a **TodoWrite** list so the user can see where the run is. Seed it right after Stage 0
@@ -475,7 +486,9 @@ slice's own model is column 2 of `$ART/slices.tsv`) and `FAILED=<agent,...>`.
 `FAILED=` non-empty → `$CS implement spawn-slices <TOPIC> --retry` **ONCE**, same `timeout: 600000`;
 it reuses each failed row's existing tree and branch at the recorded fork sha rather than forking a
 moved HEAD. Rows still named by `FAILED=` after that retry → `$CS implement abandon-slice <TOPIC>
-<agent> spawn-failed`, one call per row.
+<agent> spawn-failed`, one call per row. Roster-mutating verbs — `abandon-slice`, `spawn-slices`,
+`slice-check` — run one at a time, each its own tool call, never batched in one message: each
+rewrites `$ART/slices.tsv` whole from the rows it read, and two in flight discard each other's row.
 
 **1P.4 Dispatch.** For every row of `$ART/slices.tsv` whose status is `spawned` (`$CS job status
 <TOPIC>` prints the same rows as `SLICE=<agent> <model> <label> <status>`), run `$CS implement
@@ -507,7 +520,7 @@ Monitor's shell has none of your variables.
 stops the others, and every arm below leaves the run carrying the remaining N−1.
 
 - **`TS=ok`** — nothing to do; 1P.6's gate counts it.
-- **`TS=question`** — Stage 1's ROUTE handling, with six amendments.
+- **`TS=question`** — Stage 1's ROUTE handling, with seven amendments.
   - **The two files it names are agent-keyed here.** The payload is `$ART/question-<agent>-1.txt`
     and the `OBJECTIONS=` count is the latest such line of `$ART/turn-<agent>-1.txt` — never the
     `question-lead-<ROUND>.txt` / `turn-lead-<ROUND>.txt` Stage 1 spells, which a fanned-out round 1
@@ -529,6 +542,12 @@ stops the others, and every arm below leaves the run carrying the remaining N−
     `ROUTE=objection` yourself, Revise or Override; never call AskUserQuestion, and never take the
     attached path's *Abort* (`$CS stop <TOPIC>` refuses rc 1 while the job record exists, and would
     tear YOU down). An objection you cannot settle is a PARK, not a teardown.
+  - **The check runs in that slice's tree, and its Verdict is yours.** Stage 1's `path`, `test`, `cmd`
+    and `env` kinds are cwd-relative and only `git` carries `-C`, so run the check with cwd inside
+    `<repo>/.ap/worktrees/<TOPIC>.<agent>` or every path prefixed with it — never the main checkout,
+    never `TARGET_CWD`, which holds that slice's commits only after 1P.7. Every path or fact in the
+    reply, and in an amended `$ART/slice-<agent>.md`, you opened in that slice's worktree yourself in
+    this turn; a brief for the check names that tree.
 - **`TS=failed` / `TS=timeout`** — retry that slice ONCE: `rm -f $ART/turn-<agent>-1.txt
   $ART/turn-<agent>-1.done $ART/<agent>_turn_prompt_1.md`, `$CS implement reset-status <TOPIC>
   <agent>` (a timed-out worker is left non-idle, so the send gate would refuse), `$CS implement
@@ -546,12 +565,16 @@ stops the others, and every arm below leaves the run carrying the remaining N−
 
 `abandon-slice` takes a closed reason (`spawn-failed`, `turn-failed`, `pane-died`, `objection`),
 prints `ABANDONED=<agent>` and `REASON=<reason>`, files a flag, and tears that worker down. Its
-worktree and branch are left alone, so anything it committed still reaches 1P.7.
+worktree and branch are left alone, so anything it committed still reaches 1P.7. Two slices failing
+together are two `abandon-slice` calls in sequence, never one message (1P.3).
 
 **Parking with N Monitors armed.** A park is a wait on your inbox. A slice Monitor that fires while
 you are parked is handled by its arm above, and then you go back to waiting: the park is ended by the
-relay, never by a Monitor. And `slice-gate` is the ground truth of what the slices did — never your
-memory of which notifications you saw.
+relay, never by a Monitor. One park at a time: while a question of yours is unanswered, append no
+second one — an arm that would park holds its gate (note it in `$ART/RESUME.md`) until the answer
+lands, then parks again with it; a second `question` behind the first is consumed with it by the
+relay's cursor and never reaches the operator. And `slice-gate` is the ground truth of what the
+slices did — never your memory of which notifications you saw.
 
 **1P.6 Gate.** `$CS implement slice-gate <TOPIC> 1` prints one line per roster row,
 `<agent>\t<label>\t<ok|failed|timeout|question|held|pending|abandoned>`. It blocks nothing — the

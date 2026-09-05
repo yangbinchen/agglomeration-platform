@@ -59,6 +59,7 @@ describe("job-hub identity", () => {
     expect(hub).toContain("park, never ask");
     expect(hub).toContain('{"event":"question"');
     expect(hub).toContain("END_OF_INSTRUCTION");
+    expect(hub).toContain("One park at a time: while a question of yours is unanswered, append no second one");
   });
 
   // The delta the origin's watcher backstop rests on: a second, in-process signal path, so a broken

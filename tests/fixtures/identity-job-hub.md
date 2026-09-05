@@ -73,7 +73,7 @@ Then continue your actual task.
 2. set your status to `idle`,
 3. and WAIT — your answer arrives the way every task does, as a fresh inbox write ending with `END_OF_INSTRUCTION`.
 
-Resume from exactly where you parked once it lands. Never guess a gate's answer to keep moving, and never discard completed work because a gate went unanswered: parking costs nothing and is always the right move when the decision is genuinely the operator's.
+Resume from exactly where you parked once it lands. One park at a time: while a question of yours is unanswered, append no second one — hold the gate and park again after the answer lands, because the relay's cursor consumes everything up to the newest question and a second one behind it never reaches the operator. Never guess a gate's answer to keep moving, and never discard completed work because a gate went unanswered: parking costs nothing and is always the right move when the decision is genuinely the operator's.
 
 **Completion hint to the origin session — outbox FIRST, always:** your inbox task carries an
 `ORIGIN_SESSION=<name>` line: the operator's own Claude Code session, watching this run through a
