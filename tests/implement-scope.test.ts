@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractComponentsPaths, extractTestingPaths, fileShaped, lintComponentsPaths, matchDiffAgainstComponents, pathsInvisibleInTarget, testingBulletsWithoutPaths, unresolvedDeclaredPaths } from "../src/core/implementScope.js";
+import { extractComponentsPaths, extractTestingPaths, fileShaped, lintComponentsPaths, matchDiffAgainstComponents, pathsInvisibleInTarget, relativeForms, testingBulletsWithoutPaths, unresolvedDeclaredPaths } from "../src/core/implementScope.js";
 
 function doc(...lines: string[]): string { return lines.join("\n") + "\n"; }
 
@@ -256,6 +256,37 @@ describe("lintComponentsPaths", () => {
     const d = doc("## Components", "- `src/core/real.ts` — edit", "- `etc/box.conf` [on-box] — box config");
     expect(extractComponentsPaths(d)).toEqual(["src/core/real.ts", "etc/box.conf"]);
   });
+
+  // ---- 2026-09-06-scope-path-normalization-design.md (#215) ----
+  it("a `:line` citation of an existing file is silent (mutation: drop the LINE_REF strip)", () => {
+    expect(lintComponentsPaths(doc("## Components", "- `src/core/real.ts:12` — the helper"), root)).toEqual([]);
+  });
+  it("a line labelled (new — does not exist yet) is exempt (mutation: drop the NEW_MARK skip)", () => {
+    const d = doc("## Components", "- `src/core/phantom.ts` (new — does not exist yet) — the new module");
+    expect(lintComponentsPaths(d, root)).toEqual([]);
+  });
+  it("the NEW. and `new:` spellings are exempt too", () => {
+    expect(lintComponentsPaths(doc("## Components", "- `src/core/phantom.ts` — NEW."), root)).toEqual([]);
+    expect(lintComponentsPaths(doc("## Components", "| `src/core/phantom.ts` | new: the module |"), root)).toEqual([]);
+  });
+  // THE FALSE-EXEMPTION GUARD. Corpus lines say "new `helper()`" about a file that already exists;
+  // widening NEW_MARK to /\bnew\b/i would silence every one of them. Mutation: that widening.
+  it("a lowercase prose `new` about an existing file STILL warns", () => {
+    const d = doc("## Components", "- `src/core/phantom.ts` — new `helper()` beside the old one");
+    expect(lintComponentsPaths(d, root)).toEqual(["src/core/phantom.ts"]);
+  });
+  it("a bare filename is skipped: match rule 4 keys it on the basename, not a root join", () => {
+    // Mutation: drop the `!p.includes("/")` skip -> ["config.json"].
+    expect(lintComponentsPaths(doc("## Components", "- `config.json` — the run config"), root)).toEqual([]);
+  });
+  it("the exempt doc still EXTRACTS every path (mutation: filter in the extractor, not the lint)", () => {
+    const d = doc("## Components",
+      "- `src/core/phantom.ts` (new — does not exist yet) — the new module",
+      "- `config.json` — the run config",
+      "- `src/core/real.ts:12` — the helper");
+    expect(lintComponentsPaths(d, root)).toEqual([]);
+    expect(extractComponentsPaths(d)).toEqual(["src/core/phantom.ts", "config.json", "src/core/real.ts"]);
+  });
 });
 
 // ---- pathsInvisibleInTarget (2026-08-23-worktree-truth-telling-design.md) ----
@@ -455,5 +486,77 @@ describe("unresolvedDeclaredPaths", () => {
     expect(unresolvedDeclaredPaths(["b/x", "src/a.ts", "a/y"])).toEqual(["b/x", "a/y"]);
     expect(unresolvedDeclaredPaths(["src/a.ts", "tests/", "name.py"])).toEqual([]);
     expect(unresolvedDeclaredPaths([])).toEqual([]);
+  });
+});
+
+// ---- `:line` suffix strip (2026-09-06-scope-path-normalization-design.md, #215) ----
+// Every ap directive tells an author to cite evidence as `path:line`. That suffix names a location
+// INSIDE a file; the file is the declaration. Stripped at BOTH token producers, because the table
+// first-cell branch never calls pathTokensFrom.
+describe("declared path `:line` suffix", () => {
+  it("bullet: a `:line` citation yields the file (mutation: remove the strip in pathTokensFrom)", () => {
+    expect(extractComponentsPaths(doc("## Components", "- `src/core/job.ts:417` — the extracted helper")))
+      .toEqual(["src/core/job.ts"]);
+  });
+  it("bullet: `:start-end` and a repeated `:line:col` are stripped too", () => {
+    expect(extractComponentsPaths(doc("## Components", "- `src/a.ts:45-47` and `src/b.ts:98:5`")))
+      .toEqual(["src/a.ts", "src/b.ts"]);
+  });
+  it("TABLE form is stripped as well (mutation: strip only in pathTokensFrom)", () => {
+    expect(extractComponentsPaths(doc("## Components", "| `src/core/job.ts:98-120` | edit |")))
+      .toEqual(["src/core/job.ts"]);
+  });
+  it("Testing paths get the same treatment", () => {
+    expect(extractTestingPaths(doc("## Testing", "- `tests/a.test.ts:12` — the new case")))
+      .toEqual(["tests/a.test.ts"]);
+  });
+  // NON-REGRESSION: the pattern is anchored and digits-only. Mutation: widen LINE_REF to /:[^:]*$/
+  // and both tokens below lose their tail.
+  it("NON-REGRESSION: a URL and a colon-bearing filename survive intact", () => {
+    expect(extractComponentsPaths(doc("## Components", "- see https://example.com/a and `src/a:b.ts`")))
+      .toEqual(["https://example.com/a", "src/a:b.ts"]);
+  });
+  it("the suffix no longer inflates SCOPE_UNRESOLVED", () => {
+    expect(unresolvedDeclaredPaths(extractComponentsPaths(doc("## Components", "- `src/core/job.ts:417` — helper"))))
+      .toEqual([]);
+  });
+  it("and the stripped token now MATCHES the repo-relative diff path", () => {
+    const declared = extractComponentsPaths(doc("## Components", "- `src/core/job.ts:417` — helper"));
+    expect(matchDiffAgainstComponents(["src/core/job.ts"], declared)).toEqual([]);
+  });
+});
+
+// ---- relativeForms (2026-09-06-scope-path-normalization-design.md, #208) ----
+// The directives tell a design author to write every cited path ABSOLUTE; `git diff --name-only` is
+// repo-relative. relativeForms supplies the repo-relative form, APPEND-ONLY at the call site.
+describe("relativeForms", () => {
+  const MAIN = "/m/repo";
+  const TARGET = "/m/repo/.ap/worktrees/t";
+
+  it("an absolute path under the main checkout yields its repo-relative form", () => {
+    expect(relativeForms([`${MAIN}/src/a.ts`], MAIN, TARGET)).toEqual(["src/a.ts"]);
+  });
+  // TARGET FIRST. A worktree target sits UNDER main, so a path cited inside the worktree matches both
+  // anchors. Mutation: swap the anchor order -> [".ap/worktrees/t/src/a.ts"], which no diff says.
+  it("an absolute path inside the worktree target relativizes against the TARGET, not main", () => {
+    expect(relativeForms([`${TARGET}/src/a.ts`], MAIN, TARGET)).toEqual(["src/a.ts"]);
+  });
+  // NO FALLBACK. Mutation: add a basename fallback -> ["src/a.ts"], putting a same-named diff path in
+  // scope on a coincidence.
+  it("an absolute path under NEITHER root contributes nothing", () => {
+    expect(relativeForms(["/elsewhere/repo/src/a.ts"], MAIN, TARGET)).toEqual([]);
+  });
+  it("a relative token contributes nothing (it is already the matcher's form)", () => {
+    expect(relativeForms(["src/a.ts", "tests/"], MAIN, TARGET)).toEqual([]);
+  });
+  it("duplicates collapse, and order follows declaration order", () => {
+    expect(relativeForms(
+      [`${MAIN}/src/b.ts`, `${TARGET}/src/a.ts`, `${MAIN}/src/a.ts`, `${MAIN}/src/b.ts`],
+      MAIN, TARGET,
+    )).toEqual(["src/b.ts", "src/a.ts"]);
+  });
+  it("the anchor must be a directory prefix, not a string prefix", () => {
+    expect(relativeForms(["/m/repo-other/src/a.ts"], MAIN, TARGET)).toEqual([]);
+    expect(relativeForms([MAIN], MAIN, TARGET)).toEqual([]);
   });
 });

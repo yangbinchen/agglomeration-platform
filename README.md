@@ -24,6 +24,13 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 The most recent releases, newest first. Every entry has a dated design record under
 `docs/superpowers/specs/`; the full history is `git log`.
 
+- **0.5.89 — 2026-09-06 · scope paths as designs write them.** `implement scope-check` matches a
+  Components or Testing path written absolute under the target or the main checkout by its
+  repo-relative form (`SCOPE_RELATIVIZED=`), so an absolute-citation design no longer reads as a
+  whole-diff out-of-scope; a `:line` suffix on a declared path is ignored everywhere; the warn-only
+  audit lint skips a line labelled `(new — does not exist yet)` and a bare filename. A doc citing
+  `src/a.ts:12` now resolves to the file, so a path the suffix used to hide can newly appear in
+  `INVISIBLE_IN_TARGET` or a quick brief's `STATE_RELATIVE` lint. Closes #208, #215.
 - **0.5.88 — 2026-09-06 · `/ap:review` reads issues with `--json`.** The triage directive's read step
   used `gh issue view --comments`, which fails on gh releases that still query Projects (classic)
   (gh 2.45, the release Ubuntu packages); it now uses `--json number,title,body,comments` with a
@@ -605,7 +612,7 @@ There are **two roots**:
 
 ```
 npm run typecheck   # tsc --noEmit
-npm run test        # vitest run   (3,367 tests)
+npm run test        # vitest run   (3,390 tests)
 npm run lint        # eslint
 npm run build       # esbuild -> dist/ap.cjs  (commit the result)
 ```

@@ -105,6 +105,31 @@ describe("design assemble: Components path lint", () => {
     expect(implement).toContain("[on-box]");
   });
 
+  // 2026-09-06-scope-path-normalization-design.md. Same shape as the [on-box] pin above: the two
+  // lint escapes only pay off if both drafting paths teach the label the lint keys on.
+  it("the (new — does not exist yet) exemption is documented in design.md's fast path AND walk, and in implement.md", () => {
+    const flat = (p: string) => readFileSync(join(process.cwd(), "commands", p), "utf8").replace(/\s+/g, " ");
+    const design = flat("design.md");
+    const fastPath = design.slice(design.indexOf(".draft/components.md"), design.indexOf(".draft/testing.md"));
+    expect(fastPath).toContain("(new — does not exist yet)");
+    expect(fastPath).toContain("exempts the line from the existence check");
+    const walkStep = design.slice(design.indexOf("**components**, additionally"), design.indexOf("## Stage 11"));
+    expect(walkStep).toContain("(new — does not exist yet)");
+    expect(walkStep).toContain("exempts the line from the existence check");
+    const implement = flat("implement.md");
+    expect(implement).toContain("the audit's existence check skips a line carrying that label");
+  });
+
+  // The Stage 4 reader has to know the new key exists and what it means, or SCOPE_RELATIVIZED= is a
+  // number nobody weighs.
+  it("commands/implement.md Stage 4 names SCOPE_RELATIVIZED= and the two new matching rules", () => {
+    const implement = readFileSync(join(process.cwd(), "commands", "implement.md"), "utf8").replace(/\s+/g, " ");
+    const stage4 = implement.slice(implement.indexOf("## Stage 4 — scope check"), implement.indexOf("- *Amend* —"));
+    expect(stage4).toContain("`SCOPE_RELATIVIZED=`");
+    expect(stage4).toContain("matched by its repo-relative form");
+    expect(stage4).toContain("a `:line` suffix on a declared path is ignored");
+  });
+
   it("paths that exist, and [on-box]-tagged paths, produce no warn at all", async () => {
     scaffold("lint-clean", {
       ...FULL,

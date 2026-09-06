@@ -10104,7 +10104,7 @@ function pathTokensFrom(text) {
   const out2 = [];
   for (const raw of text.replace(/`/g, "").replace(MD_LINK, "$1").split(/\s+/)) {
     const trimmed = raw.replace(/^[(\[{"']+/, "").replace(/[)\]}"',.;:!?]+$/, "");
-    const tok = stripEmphasis(trimmed);
+    const tok = stripEmphasis(trimmed).replace(LINE_REF, "");
     if (tok === "") continue;
     if (tok === "/") continue;
     if (HAS_SLASH.test(tok) || ENDS_WITH_EXT.test(tok)) out2.push(tok);
@@ -10132,7 +10132,7 @@ function sectionPathsByLine(docText, header, prefix) {
   for (const record of sectionLines(docText, header, prefix)) {
     if (TABLE_ROW.test(record)) {
       if (SEPARATOR_ROW.test(record)) continue;
-      const line = record.replace(/^[ \t]*\|[ \t]*/, "").replace(/[ \t]*\|.*$/, "").replace(/`/g, "").trim();
+      const line = record.replace(/^[ \t]*\|[ \t]*/, "").replace(/[ \t]*\|.*$/, "").replace(/`/g, "").trim().replace(LINE_REF, "");
       if (HEADER_CELL.test(line)) continue;
       if (HAS_SLASH.test(line) || ENDS_WITH_EXT.test(line)) out2.push({ line: record, paths: [line] });
     } else {
@@ -10171,7 +10171,11 @@ function lintComponentsPaths(docText, root) {
   const out2 = [];
   for (const rec of componentsPathsByLine(docText)) {
     if (rec.line.includes(ON_BOX_TAG)) continue;
-    for (const p of rec.paths) if (!(0, import_node_fs13.existsSync)((0, import_node_path10.isAbsolute)(p) ? p : (0, import_node_path10.join)(root, p))) out2.push(p);
+    if (NEW_MARK.test(rec.line)) continue;
+    for (const p of rec.paths) {
+      if (!p.includes("/")) continue;
+      if (!(0, import_node_fs13.existsSync)((0, import_node_path10.isAbsolute)(p) ? p : (0, import_node_path10.join)(root, p))) out2.push(p);
+    }
   }
   return out2;
 }
@@ -10191,6 +10195,23 @@ function invisibleInTarget(paths, mainRoot, targetCwd2) {
     if (seen.has(p)) continue;
     seen.add(p);
     if ((0, import_node_fs13.existsSync)((0, import_node_path10.resolve)(mainRoot, p)) && !(0, import_node_fs13.existsSync)((0, import_node_path10.resolve)(targetCwd2, p))) out2.push(p);
+  }
+  return out2;
+}
+function relativeForms(declared, mainRoot, targetCwd2) {
+  const seen = /* @__PURE__ */ new Set();
+  const out2 = [];
+  for (const p of declared) {
+    if (!(0, import_node_path10.isAbsolute)(p)) continue;
+    for (const anchor of [targetCwd2, mainRoot]) {
+      if (!p.startsWith(anchor + "/")) continue;
+      const rel = p.slice(anchor.length + 1);
+      if (!seen.has(rel)) {
+        seen.add(rel);
+        out2.push(rel);
+      }
+      break;
+    }
   }
   return out2;
 }
@@ -10234,7 +10255,7 @@ function matchDiffAgainstComponents(diffPaths, compPaths) {
   }
   return out2;
 }
-var import_node_fs13, import_node_path10, COMPONENTS_HEADER, TESTING_HEADER, OTHER_H2, ANY_COMPONENTS_PREFIX, ANY_TESTING_PREFIX, TABLE_ROW, SEPARATOR_ROW, BULLET_MARKER, HEADER_CELL, HAS_SLASH, ENDS_WITH_EXT, ON_BOX_TAG, MD_LINK;
+var import_node_fs13, import_node_path10, COMPONENTS_HEADER, TESTING_HEADER, OTHER_H2, ANY_COMPONENTS_PREFIX, ANY_TESTING_PREFIX, TABLE_ROW, SEPARATOR_ROW, BULLET_MARKER, HEADER_CELL, HAS_SLASH, ENDS_WITH_EXT, LINE_REF, ON_BOX_TAG, NEW_MARK, MD_LINK;
 var init_implementScope = __esm({
   "src/core/implementScope.ts"() {
     "use strict";
@@ -10251,7 +10272,9 @@ var init_implementScope = __esm({
     HEADER_CELL = /^(File|Path|Name|Files?[ \t]+(edited|moved|touched))$/;
     HAS_SLASH = /\//;
     ENDS_WITH_EXT = /\.[a-zA-Z]+$/;
+    LINE_REF = /(?::\d+(?:-\d+)?)+$/;
     ON_BOX_TAG = "[on-box]";
+    NEW_MARK = /\(new\b|\bNEW\b|\bnew:/;
     MD_LINK = /\[[^\]\n]*\]\(([^)\s]*)\)/g;
   }
 });
@@ -14498,7 +14521,7 @@ async function assembleRun(rest) {
   (0, import_node_fs36.mkdirSync)((0, import_node_path30.join)(art, "design-doc"), { recursive: true });
   atomicWrite(out2, doc);
   for (const p of lintComponentsPaths(doc, repoRoot())) {
-    log.warn(`design assemble: Components path not found in this checkout: ${p} \u2014 mark it [on-box] if it is deliberately box-local, or fix the path`);
+    log.warn(`design assemble: Components path not found in this checkout: ${p} \u2014 mark it [on-box] if it is deliberately box-local, label it (new \u2014 does not exist yet) if this design creates it, or fix the path`);
   }
   const result = auditDoc(doc);
   const auditText = [`VERDICT=${result.verdict}`, ...result.issues.map((i) => `ISSUE=${i}`)].join("\n") + "\n";
@@ -16708,7 +16731,7 @@ async function auditRun(rest) {
     return 2;
   }
   for (const p of lintComponentsPaths(text, repoRoot())) {
-    log.warn(`implement audit: Components path not found in this checkout: ${p} \u2014 mark it [on-box] if it is deliberately box-local, or fix the path`);
+    log.warn(`implement audit: Components path not found in this checkout: ${p} \u2014 mark it [on-box] if it is deliberately box-local, label it (new \u2014 does not exist yet) if this design creates it, or fix the path`);
   }
   const tb = testingBulletsWithoutPaths(text);
   if (tb.withoutPath > 0) {
@@ -17511,7 +17534,8 @@ async function scopeCheckWith(topic, d) {
   atomicWrite((0, import_node_path35.join)(art, "testing-paths.txt"), testingPaths.length ? testingPaths.join("\n") + "\n" : "");
   const declaredPaths = [.../* @__PURE__ */ new Set([...compPaths, ...testingPaths])];
   if (declaredPaths.length === 0) log.warn("scope conformance: design declared 0 parseable scope paths; ALL changed files flagged by default (guard no-op)");
-  const oos = matchDiffAgainstComponents(diffPaths, declaredPaths);
+  const rel = relativeForms(declaredPaths, repoRoot(), targetCwd2);
+  const oos = matchDiffAgainstComponents(diffPaths, [...declaredPaths, ...rel]);
   const oosPath = (0, import_node_path35.join)(art, "scope-out-of-scope.txt");
   atomicWrite(oosPath, oos.length ? oos.join("\n") + "\n" : "");
   if (oos.length > 0) log.warn(`scope conformance: ${oos.length} out-of-scope path(s) detected`);
@@ -17523,6 +17547,7 @@ OOS_COUNT=${oos.length}
 OOS_PATH=${oosPath}
 SCOPE_UNRESOLVED=${unresolvedDeclaredPaths(compPaths).length}
 TESTING_UNRESOLVED=${unresolvedDeclaredPaths(testingPaths).length}
+SCOPE_RELATIVIZED=${rel.length}
 `);
   return 0;
 }

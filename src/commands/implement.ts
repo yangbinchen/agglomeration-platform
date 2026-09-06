@@ -15,7 +15,7 @@ import {
   parseSetProviderArgs, FALLBACK_REASONS, recordProviderFallback,
 } from "../core/implement.js";
 import { isoUtc, archiveTopic } from "../core/archive.js";
-import { extractComponentsPaths, extractTestingPaths, lintComponentsPaths, matchDiffAgainstComponents, pathsInvisibleInTarget, testingBulletsWithoutPaths, unresolvedDeclaredPaths } from "../core/implementScope.js";
+import { extractComponentsPaths, extractTestingPaths, lintComponentsPaths, matchDiffAgainstComponents, pathsInvisibleInTarget, relativeForms, testingBulletsWithoutPaths, unresolvedDeclaredPaths } from "../core/implementScope.js";
 import { runnerAt, preSnapshot, createOrResumeBranch, currentBranch, shortstat, finishWork, hasDistinctBranch, targetProblem, type Runner } from "../core/gitwork.js";
 import { runForensics, runFlag, recordHubFlag, runReflect } from "../core/forensics.js";
 import { haveCmd } from "../core/deps.js";
@@ -123,7 +123,7 @@ async function auditRun(rest: string[]): Promise<number> {
   try { text = readFileSync(doc, "utf8"); } catch { log.error(`implement audit: doc unreadable: ${doc}`); return 2; }
   // Warn-only path lint (catches docs authored outside /ap:design); the audit below owns the verdict.
   for (const p of lintComponentsPaths(text, repoRoot())) {
-    log.warn(`implement audit: Components path not found in this checkout: ${p} — mark it [on-box] if it is deliberately box-local, or fix the path`);
+    log.warn(`implement audit: Components path not found in this checkout: ${p} — mark it [on-box] if it is deliberately box-local, label it (new — does not exist yet) if this design creates it, or fix the path`);
   }
   // Warn-only Testing-bullet count (2026-08-23-brief-path-correctness-design.md, C3). A bullet that
   // names only a behavior contributes nothing to scope, and the cost of that lands at Stage 4 as an
@@ -784,7 +784,13 @@ export async function scopeCheckWith(topic: string, d: ScopeDeps): Promise<numbe
   atomicWrite(join(art, "testing-paths.txt"), testingPaths.length ? testingPaths.join("\n") + "\n" : "");
   const declaredPaths = [...new Set([...compPaths, ...testingPaths])];
   if (declaredPaths.length === 0) log.warn("scope conformance: design declared 0 parseable scope paths; ALL changed files flagged by default (guard no-op)");
-  const oos = matchDiffAgainstComponents(diffPaths, declaredPaths);
+  // Path normalization (2026-09-06-scope-path-normalization-design.md): the directives tell a design
+  // author to write every cited path ABSOLUTE, while `git diff --name-only` is repo-relative, so a
+  // doc that followed that rule declared nothing the matcher could key on and the whole diff read
+  // out-of-scope. APPENDED, never substituted -- the declared counts and the artifacts above keep the
+  // absolute token verbatim.
+  const rel = relativeForms(declaredPaths, repoRoot(), targetCwd);
+  const oos = matchDiffAgainstComponents(diffPaths, [...declaredPaths, ...rel]);
   const oosPath = join(art, "scope-out-of-scope.txt");
   atomicWrite(oosPath, oos.length ? oos.join("\n") + "\n" : "");
   if (oos.length > 0) log.warn(`scope conformance: ${oos.length} out-of-scope path(s) detected`);
@@ -798,7 +804,7 @@ export async function scopeCheckWith(topic: string, d: ScopeDeps): Promise<numbe
   // declaration order, because stdout is gone once the hub's turn ends.
   const unresolved = unresolvedDeclaredPaths(declaredPaths);
   atomicWrite(join(art, "scope-unresolved.txt"), unresolved.length ? unresolved.join("\n") + "\n" : "");
-  process.stdout.write(`SCOPE_DECLARED=${declaredPaths.length}\nTESTING_DECLARED=${testingPaths.length}\nOOS_COUNT=${oos.length}\nOOS_PATH=${oosPath}\nSCOPE_UNRESOLVED=${unresolvedDeclaredPaths(compPaths).length}\nTESTING_UNRESOLVED=${unresolvedDeclaredPaths(testingPaths).length}\n`); return 0;
+  process.stdout.write(`SCOPE_DECLARED=${declaredPaths.length}\nTESTING_DECLARED=${testingPaths.length}\nOOS_COUNT=${oos.length}\nOOS_PATH=${oosPath}\nSCOPE_UNRESOLVED=${unresolvedDeclaredPaths(compPaths).length}\nTESTING_UNRESOLVED=${unresolvedDeclaredPaths(testingPaths).length}\nSCOPE_RELATIVIZED=${rel.length}\n`); return 0;
 }
 
 // ---- verify-tests (v1 hub-side independent test re-run, IN-PLACE in target_cwd) ----

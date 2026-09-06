@@ -34,6 +34,11 @@
 // and the bare-name/sibling rules are the documented divergences. All new rules STRICTLY WIDEN
 // in-scope — they can only suppress an OOS warning, never invent one, so they cannot turn a passing
 // scope-check into a failing one.
+// The same holds for 2026-09-06-scope-path-normalization-design.md: a trailing `:line` suffix is
+// stripped at both token producers, `relativeForms` APPENDS the repo-relative form of a declared
+// path written absolute under the target or the main checkout, and the warn-only lint gained two
+// more skips (a line labelled `(new — does not exist yet)`, and a bare filename, which match rule 4
+// keys on the basename rather than on a root-join).
 
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -49,8 +54,18 @@ const BULLET_MARKER = /^[ \t]*[-*+][ \t]+/;
 const HEADER_CELL = /^(File|Path|Name|Files?[ \t]+(edited|moved|touched))$/;
 const HAS_SLASH = /\//;
 const ENDS_WITH_EXT = /\.[a-zA-Z]+$/;
+/** A trailing `:line` / `:line-line` evidence suffix, the form every ap directive tells an author to
+ *  cite with (`src/core/job.ts:417`, `src/a.ts:45-47`, `src/a.ts:98:5`). It names a location INSIDE a
+ *  file, so the file is the declaration; the suffix only makes the token unmatchable and not
+ *  file-shaped. Anchored at the end and digits-only, so `https://x/y` and `src/a:b.ts` are untouched. */
+const LINE_REF = /(?::\d+(?:-\d+)?)+$/;
 /** Line-level opt-out of the path lint: the line's paths live on another box, not in this checkout. */
 const ON_BOX_TAG = "[on-box]";
+/** Line-level opt-out of the path lint's EXISTENCE check: the line says this design creates the path.
+ *  Matches the label `/ap:implement` and `/ap:quick` already mandate — `(new — does not exist yet)`,
+ *  a bare uppercase `NEW`, or a `new:` table cell. Deliberately NOT `/\bnew\b/i`: corpus lines say
+ *  "new `helper()`" about a file that already exists, and those must keep warning. */
+const NEW_MARK = /\(new\b|\bNEW\b|\bnew:/;
 
 /** The directory portion of a path (everything before the last "/"), "" when there is no "/". */
 function parentOf(p: string): string { const i = p.lastIndexOf("/"); return i < 0 ? "" : p.slice(0, i); }
@@ -90,7 +105,7 @@ export function pathTokensFrom(text: string): string[] {
   const out: string[] = [];
   for (const raw of text.replace(/`/g, "").replace(MD_LINK, "$1").split(/\s+/)) {
     const trimmed = raw.replace(/^[(\[{"']+/, "").replace(/[)\]}"',.;:!?]+$/, "");
-    const tok = stripEmphasis(trimmed);
+    const tok = stripEmphasis(trimmed).replace(LINE_REF, "");
     if (tok === "") continue;
     // A bare "/" is never a meaningful declaration, and under the explicit-directory match rule it
     // would put EVERY absolute diff path in scope — a scope gate that silently opens. Inert today
@@ -124,7 +139,9 @@ function sectionPathsByLine(docText: string, header: RegExp, prefix: RegExp): { 
   for (const record of sectionLines(docText, header, prefix)) {
     if (TABLE_ROW.test(record)) {
       if (SEPARATOR_ROW.test(record)) continue;
-      const line = record.replace(/^[ \t]*\|[ \t]*/, "").replace(/[ \t]*\|.*$/, "").replace(/`/g, "").trim();
+      // The `:line` strip runs here too: this branch never calls pathTokensFrom, so a table cell
+      // `| src/core/job.ts:98-120 | edit |` would otherwise keep the suffix the bullet form drops.
+      const line = record.replace(/^[ \t]*\|[ \t]*/, "").replace(/[ \t]*\|.*$/, "").replace(/`/g, "").trim().replace(LINE_REF, "");
       if (HEADER_CELL.test(line)) continue;
       if (HAS_SLASH.test(line) || ENDS_WITH_EXT.test(line)) out.push({ line: record, paths: [line] });
     } else {
@@ -225,12 +242,20 @@ export function unresolvedDeclaredPaths(declared: string[]): string[] {
 /** Warn-only Components path lint (2026-08-14-components-path-lint-design.md). Returns the declared
  *  Components paths that do NOT exist under `root` — absolute paths as-is, relative ones joined to
  *  `root`, trailing-`/` dirs checked as directories. A source line carrying the literal `[on-box]`
- *  tag is deliberately box-local: ALL of its paths are exempt. Callers warn; nothing here fails. */
+ *  tag is deliberately box-local: ALL of its paths are exempt. So is a line labelled `(new — does not
+ *  exist yet)`: the design says the run CREATES that path, so "not found" is the expected state, not
+ *  a finding. And a bare filename (no `/`) is skipped entirely — match rule 4 keys it on the BASENAME
+ *  of any diff path, so joining it to the root and asking whether `<root>/config.json` exists is the
+ *  wrong question. Callers warn; nothing here fails. */
 export function lintComponentsPaths(docText: string, root: string): string[] {
   const out: string[] = [];
   for (const rec of componentsPathsByLine(docText)) {
     if (rec.line.includes(ON_BOX_TAG)) continue;
-    for (const p of rec.paths) if (!existsSync(isAbsolute(p) ? p : join(root, p))) out.push(p);
+    if (NEW_MARK.test(rec.line)) continue;
+    for (const p of rec.paths) {
+      if (!p.includes("/")) continue;
+      if (!existsSync(isAbsolute(p) ? p : join(root, p))) out.push(p);
+    }
   }
   return out;
 }
@@ -273,6 +298,41 @@ export function invisibleInTarget(paths: string[], mainRoot: string, targetCwd: 
     if (seen.has(p)) continue;
     seen.add(p);
     if (existsSync(resolve(mainRoot, p)) && !existsSync(resolve(targetCwd, p))) out.push(p);
+  }
+  return out;
+}
+
+/** The repo-relative forms of the declared tokens that were written ABSOLUTE under the run's target
+ *  or under the main checkout. `git diff --name-only` emits repo-relative paths, and every ap
+ *  directive tells a design author to write paths absolute ("stat every path before you cite it, and
+ *  write it ABSOLUTE"), so a doc that follows the rule declared nothing the matcher could key on and
+ *  the whole diff read out-of-scope (`OOS_COUNT=16`, every path declared).
+ *
+ *  TARGET FIRST, then main. A worktree run's target is `<main>/.ap/worktrees/<topic>`, so a path
+ *  cited inside the worktree is under BOTH roots; anchoring on main first would yield
+ *  `.ap/worktrees/<topic>/src/a.ts`, which is not what the diff says. The first anchor that matches
+ *  wins.
+ *
+ *  NO FALLBACK. An absolute token under neither root contributes nothing — no basename, no
+ *  ancestor-name guess. A path on another box is not this repo's file, and inventing a relative form
+ *  for it would put a same-named diff path in scope on a coincidence.
+ *
+ *  APPEND-ONLY at the call site: the result is concatenated onto the declared set, never substituted
+ *  for it. The matcher is an existential OR over declarations, so an added token can only move a diff
+ *  path from out-of-scope to in-scope; the declared counts and the artifacts keep the ABSOLUTE token
+ *  verbatim ("report, never filter",
+ *  docs/superpowers/specs/2026-08-23-declared-path-precision-design.md). */
+export function relativeForms(declared: string[], mainRoot: string, targetCwd: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of declared) {
+    if (!isAbsolute(p)) continue;
+    for (const anchor of [targetCwd, mainRoot]) {
+      if (!p.startsWith(anchor + "/")) continue;
+      const rel = p.slice(anchor.length + 1);
+      if (!seen.has(rel)) { seen.add(rel); out.push(rel); }
+      break;
+    }
   }
   return out;
 }

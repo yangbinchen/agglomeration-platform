@@ -115,6 +115,9 @@ tool** (atomic single-shot writes), one file per section:
   somewhere other than this checkout (a box-local config, a sibling repo) is tagged **`[on-box]`** on
   the same line — `` - `~/.ap/contracts.yaml` [on-box] — read at spawn time `` — which exempts that
   line from the path check; `assemble` warns (never fails) on every unmarked path it cannot find.
+  A path this design CREATES is labelled `(new — does not exist yet)` on the same line (the label
+  `/ap:implement` and `/ap:quick` already mandate); that label exempts the line from the existence
+  check.
 - `.draft/testing.md` → `## Testing` + bullets of test coverage. *(required)* **Lead each bullet with
   the test file path** (`` - `tests/foo.test.ts` — <what it asserts> ``), the same rule
   `.draft/components.md` carries above: `implement`'s scope-check counts Testing paths as declared
@@ -345,7 +348,10 @@ so keep handling / relay and re-run. Only on rc 0 continue.
      worker a whole question round). The stat sweep may be a subagent's; the path you cite you
      stat'd yourself in this turn. A path that deliberately lives elsewhere (a box-local config, a
      sibling repo) is tagged **`[on-box]`** on the same line, which exempts that line from the path
-     check; Stage 11's `assemble` warns (never fails) on every unmarked path it cannot find.
+     check; Stage 11's `assemble` warns (never fails) on every unmarked path it cannot find. A path
+     this design CREATES is labelled `(new — does not exist yet)` on the same line (the label
+     `/ap:implement` and `/ap:quick` already mandate); that label exempts the line from the existence
+     check.
 
 ## Stage 11 — assemble + deploy-audit gate (retry loop)
 
