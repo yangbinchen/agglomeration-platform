@@ -24,6 +24,11 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 The most recent releases, newest first. Every entry has a dated design record under
 `docs/superpowers/specs/`; the full history is `git log`.
 
+- **0.5.87 — 2026-09-06 · parked stays parked.** A detached job hub's `progress` heartbeat while it
+  waits on an operator question no longer un-parks the question: `job relay` accepts while nothing but
+  progress follows it, `job status`/`attach` keep `PARKED=yes`, and a heartbeat logged after the relay
+  cannot re-park an answered question (the consumed check now compares the relay cursor against the
+  question's own offset). A relayed answer no longer carries the generic done-event footer. Closes #242.
 - **0.5.86 — 2026-09-06 · `.ap-provision`.** A repo commits `.ap-provision` at its root, one git
   pathspec per line, and every ap worktree — a detached run's and each slice worker's — receives the
   gitignored artifacts it names, copied from the main checkout at launch: enumerated per line with
@@ -596,7 +601,7 @@ There are **two roots**:
 
 ```
 npm run typecheck   # tsc --noEmit
-npm run test        # vitest run   (3,344 tests)
+npm run test        # vitest run   (3,367 tests)
 npm run lint        # eslint
 npm run build       # esbuild -> dist/ap.cjs  (commit the result)
 ```

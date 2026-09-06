@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { freshHome } from "./helpers/tmpHome.js";
 import { virtualClock } from "./helpers/clock.js";
-import { run, waitRun } from "../src/commands/job.js";
+import { run, waitRun, relayRun } from "../src/commands/job.js";
 import { formatJob, jobPath, type JobRecord } from "../src/core/job.js";
 import { outboxPath } from "../src/core/ipc.js";
 import { commandArtDir } from "../src/core/forensics.js";
@@ -417,6 +417,24 @@ describe("job relay — the parked check is the only gate on the hub's inbox", (
     seedJob();
     expect(await run(["relay", "demo", "  "])).toBe(2);
   });
+  it("ACCEPTS when only progress follows the question — the hub's heartbeat while parked is not an answer (#242)", async () => {
+    home();
+    seedJob();
+    seedOutbox([{ event: "question", message: "which?" }, { event: "progress", note: "operator question still open" }]);
+    const sent: string[][] = [];
+    const rc = await capture(() => relayRun(["demo", "codex"], async (argv) => { sent.push(argv); return 0; }));
+    expect(rc.rc).toBe(0);
+    expect(sent).toEqual([["--from", "hub", "--no-done-instruction", REC.hub.agent, REC.topic, "codex"]]);
+    const outbox = readFileSync(outboxPath(REC.hub.agent, REC.hub.model, REC.topic));
+    expect(readFileSync(join(dirname(jobPath(REC.topic)), "cursor.txt"), "utf8")).toBe(String(outbox.byteLength) + "\n");
+  });
+  it("the recorder is never called on a refusal", async () => {
+    home();
+    seedJob();
+    seedOutbox([{ event: "question", message: "which?" }, { event: "ack" }]);
+    const rc = await capture(() => relayRun(["demo", "codex"], async () => { throw new Error("send must not run on a refusal"); }));
+    expect(rc.rc).toBe(1);
+  });
 });
 
 // 0.5.64: job.json is write-once, so the run's provider record goes stale when the directive's
@@ -469,6 +487,30 @@ describe("job status / attach — shared parked verdict", () => {
       expect(out).not.toContain("PARKED_MESSAGE=");
     }
     expect(status).toContain("LAST_EVENT=question");   // the event itself is still reported
+  });
+  it("a progress heartbeat after the question keeps PARKED=yes on both", async () => {
+    home();
+    seedJob();
+    seedOutbox(question + JSON.stringify({ event: "progress", note: "operator question still open" }) + "\n");
+    const status = (await capture(() => run(["status", "demo"]))).out;
+    const attach = (await capture(() => run(["attach", "demo"]))).out;
+    for (const out of [status, attach]) {
+      expect(out).toContain("PARKED=yes");
+      expect(out).toContain("PARKED_MESSAGE=which provider?%0Aone line%2C please");
+    }
+  });
+  it("a heartbeat after the relay does not re-park an answered question", async () => {
+    home();
+    seedJob();
+    seedOutbox(question + JSON.stringify({ event: "progress", note: "still working" }) + "\n");
+    // The relay covered the question and nothing more; the heartbeat landed after it.
+    writeFileSync(join(dirname(jobPath(REC.topic)), "cursor.txt"), String(Buffer.byteLength(question, "utf8")) + "\n");
+    const status = (await capture(() => run(["status", "demo"]))).out;
+    const attach = (await capture(() => run(["attach", "demo"]))).out;
+    for (const out of [status, attach]) {
+      expect(out).toContain("PARKED=no");
+      expect(out).not.toContain("PARKED_MESSAGE=");
+    }
   });
 
   it.each([

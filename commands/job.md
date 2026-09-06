@@ -103,6 +103,10 @@ Relay bumps the job's cursor past the question, so the next `wait` will not re-r
 `status` stops reporting an answered question as `PARKED=yes`, so seeing it again means a genuinely
 new question, never the same one twice.
 
+A parked hub may keep logging `progress` while it waits — a heartbeat, not an answer. Relay accepts
+while nothing but progress follows the question; only the hub's `ack` of your answer or a terminal
+event un-parks it.
+
 Relay **refuses (rc 1) when nothing is parked right now** — the hub is working, or it has finished.
 That is the only gate protecting its inbox: a write mid-task overwrites the task it is running. If
 you get that refusal, read `$CS job status <TOPIC>` rather than retrying.
