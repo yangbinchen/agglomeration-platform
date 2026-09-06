@@ -303,3 +303,33 @@ Pure unit tests only (fresh `AP_HOME` per test via `tests/helpers/tmpHome.ts`; n
   `tests/stale-tokens.test.ts` green.
 - E5 (overlap scheduling) appears in the shipped directive/spec ONLY as a documented non-goal.
 
+
+## Survivors re-admit + ultracode research budget (0.5.91, issue #233)
+
+**Defect.** On a live `/ap:explore` run (iris-runtime, 2026-09-05) a claude worker running with
+`ultracode` had produced no `findings-<agent>.md` when the 600 s `research` budget expired, so
+Phase 4a dropped it. Its findings landed minutes later once the hub re-armed `research-wait` with
+`AP_CONSULT_TIMEOUT_RESEARCH=2400` — but the drop was already permanent, because `survivorsRun`
+judged `list.txt`, the file its own earlier run had pruned. The hub put the worker back by copying
+`list-original.txt` over `list.txt` by hand, which E1 never sanctioned.
+
+**Roster re-judge + refusal.** `survivors` now reads its roster from `list-original.txt` when that
+file exists (else `list.txt`), so every run re-judges the FULL original roster and a worker whose
+artifact arrived late is put back: stdout gains `READMITTED=<agent>` per row re-admitted, beside the
+unchanged `SURVIVORS=`/`DROPPED=`/`DEGRADED=1` lines, which a re-run now re-prints because the
+judgement is re-made rather than remembered (the "only on the run that performs the drop" caveat in
+`commands/explore.md` Phase 4a is gone). `list-original.txt` is still written once, on the first
+rewrite only. Re-admission has one boundary: past Phase 4b (`open-questions.md` routed the roster's questions) or Phase 4c (`diff.md`'s
+buckets are first-match-wins over the worker set), so when a re-admit would happen and
+`$ART/diff.md` exists the verb logs the phase and returns 1 without writing — the hub decides. The
+all-survived fast path stays a no-op only when `list.txt` already IS the survivor set.
+
+**Budget.** `ultracodeResearchMultiplier(kind, provider, env)` in `src/core/contracts.ts` returns 4
+for `kind === "research"` on a `claude` provider unless `AP_ULTRACODE=0` (the same opt-out the nudge
+keyword takes in `send.ts`), else 1. It is applied at the ONE place a phase budget is composed —
+`phaseWait`'s `scaledTimeout(consultTimeout(row.timeoutKind) * ultracodeResearchMultiplier(...),
+multiplier(provider))` in `src/core/phaseTable.ts` — so it covers explore's and design's research
+waits and nothing else; design's `DRILLDOWN_TIMEOUT` reuses the `research` kind through its own
+line and is deliberately untouched. The default budget for a claude research turn is therefore
+2400 s (4 x 600) before the provider's `timeout_multiplier`, and `AP_CONSULT_TIMEOUT_RESEARCH` still
+sets the base it multiplies.
