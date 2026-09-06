@@ -183,7 +183,9 @@ consent, never block, and cost nothing, so prefer over-recording. Review later w
      never hunts for a file that was always going to be its own output.
    - **Acceptance checks must be jointly satisfiable.** Read the pair you just wrote and ask whether
      one run can pass both ("tests green" + "this file byte-identical" is not satisfiable when the
-     tests regenerate the file).
+     tests regenerate the file). A grep-shaped gate whose pattern is a substring of an identifier
+     that must stay is not jointly satisfiable: state the expected remaining matches instead of
+     `returns nothing`.
 
 ## Stage 1 — Build
 

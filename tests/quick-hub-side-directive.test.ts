@@ -21,6 +21,10 @@ describe("quick.md hub side: the hub's own delegation split", () => {
     expect(stage0).toContain("a subagent may enumerate what to open, never originate a citation.");
   });
 
+  it("Stage 0's acceptance-check rule names the grep-shaped gate conflict", () => {
+    expect(stage0).toContain("state the expected remaining matches");
+  });
+
   it("Stage 2 keeps the gate run and the VERIFY attestation with the hub", () => {
     expect(stage2).toContain("Reading the log and its failure tail is grind you may dispatch to a subagent");
     expect(stage2).toContain("the gate run itself is yours — run it in your own shell with the pin");

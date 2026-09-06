@@ -13,6 +13,12 @@ describe("composeRound1Prompt", () => {
     // must NOT carry its own END_OF_INSTRUCTION — inboxWrite appends the canonical fence
     expect(p).not.toContain("END_OF_INSTRUCTION");
   });
+
+  it("says a grep-shaped acceptance check is met by removal, never by respelling", () => {
+    const p = composeRound1Prompt("## Goal\nAdd X", "feat/quick-auth");
+    expect(p).toContain("never by respelling");
+    expect(p).toMatch(/gate conflict/);
+  });
 });
 
 describe("composeFixPrompt", () => {
@@ -22,6 +28,12 @@ describe("composeFixPrompt", () => {
     expect(p).toContain("ISSUES TO ADDRESS");
     expect(p).toContain("- test foo fails");
     expect(p).not.toContain("END_OF_INSTRUCTION");
+  });
+
+  it("carries the grep-gate rule into the fix rounds too", () => {
+    const p = composeFixPrompt("- test foo fails", 2);
+    expect(p).toContain("never by respelling");
+    expect(p).toMatch(/gate conflict/);
   });
 });
 

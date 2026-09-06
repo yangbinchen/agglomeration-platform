@@ -195,6 +195,13 @@ describe("bridge round-send / round-wait", () => {
     expect(readFileSync(join(bridgeExecDir("t"), "round-prompt-1.md"), "utf8")).toContain("implement X");
   });
 
+  it("round-send 1 carries the grep-gate rule from BLOCKERS", async () => {
+    seedPart("t", "/abs/repoB");
+    const deps: RoundSendDeps = { offsetFor: () => 0, send: async () => 0 };
+    expect(await roundSendWith("t", 1, deps)).toBe(0);
+    expect(readFileSync(join(bridgeExecDir("t"), "round-prompt-1.md"), "utf8")).toContain("never by respelling");
+  });
+
   it("round-send 2 requires followup-2.md (rc 1 if missing)", async () => {
     seedPart("t", "/abs/repoB");
     const deps: RoundSendDeps = { offsetFor: () => 0, send: async () => 0 };
