@@ -512,8 +512,8 @@ describe("jobBrief", () => {
       expect(b).toContain("rebuilt\nHERE with the repo's own build command");
       expect(b).toContain("`.ap-provision` at the repo root");
       expect(b).toContain("name that in your handoff");
-      // PR A ships no reader for the file, so the clause must not claim one exists yet
-      expect(b).toContain("once that support lands");
+      // 0.5.86 ships the reader, so the clause names it as live rather than pending
+      expect(b).toContain("— and ap copies it into the worktree at the next launch");
       expect(b).not.toContain("starts armed");
       expect(b).not.toContain("declared gitignored artifact");
     });

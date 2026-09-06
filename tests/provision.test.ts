@@ -6,7 +6,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { pinFor, pinReport, pythonPin, shadowHits, siteDirs, type ShadowHit } from "../src/core/provision.js";
+import { declaredPathspecs, pinFor, pinReport, pythonPin, shadowHits, siteDirs, type ShadowHit } from "../src/core/provision.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
@@ -345,5 +345,64 @@ describe("pinFor — the ONE gate all three application sites share", () => {
     const { home, root, target } = shadowed();
     expect(pinFor(root, root, home, ENV)).toBe("");
     expect(pinFor(root, target, tmp("ap-prov-clean-"), ENV)).toBe("");
+  });
+});
+
+// The declaration file is COMMITTED by the repo owner, and it steers where files land in a directory
+// an autonomous TUI works in — so every line is validated before git ever sees it (A11).
+describe("declaredPathspecs — the pathspecs a repo declares at .ap-provision", () => {
+  const write = (lines: string[]): string => {
+    const root = tmp("ap-decl-");
+    writeFileSync(join(root, ".ap-provision"), lines.join("\n"));
+    return root;
+  };
+
+  it("keeps the good lines in file order with their 1-based numbers, skipping comments, blanks and whitespace", () => {
+    const root = write([
+      "# build products the runs need",   // 1
+      "",                                  // 2
+      "pkg",                               // 3
+      "  build/*.so   ",                   // 4
+      "   # an indented comment",          // 5
+      "irisruntime/utils/cppops",          // 6
+    ]);
+    expect(declaredPathspecs(root)).toEqual({
+      specs: [
+        { line: 3, spec: "pkg" },
+        { line: 4, spec: "build/*.so" },
+        { line: 6, spec: "irisruntime/utils/cppops" },
+      ],
+      rejected: [],
+    });
+  });
+
+  it("REJECTS an absolute line, a `..` segment anywhere, a leading `-` and pathspec magic — each by line number", () => {
+    const root = write([
+      "pkg",              // 1
+      "/etc/passwd",      // 2
+      "../outside",       // 3
+      "pkg/../other",     // 4
+      "-rf",              // 5
+      ":(exclude)x",      // 6
+      "build/*.so",       // 7
+      "..",               // 8
+      "x/..",             // 9
+    ]);
+    const { specs, rejected } = declaredPathspecs(root);
+    expect(specs).toEqual([{ line: 1, spec: "pkg" }, { line: 7, spec: "build/*.so" }]);
+    expect(rejected.map((x) => [x.line, x.spec])).toEqual([
+      [2, "/etc/passwd"], [3, "../outside"], [4, "pkg/../other"], [5, "-rf"], [6, ":(exclude)x"], [8, ".."], [9, "x/.."],
+    ]);
+    expect(rejected.every((x) => x.reason.length > 0)).toBe(true);
+    expect(rejected.find((x) => x.line === 2)!.reason).toContain("absolute");
+    expect(rejected.find((x) => x.line === 3)!.reason).toContain("..");
+    expect(rejected.find((x) => x.line === 5)!.reason).toContain("option");
+    expect(rejected.find((x) => x.line === 6)!.reason).toContain("pathspec magic");
+    // `..` inside a NAME is not a segment: `a..b` names a directory, not an escape.
+    expect(declaredPathspecs(write(["a..b"])).specs).toEqual([{ line: 1, spec: "a..b" }]);
+  });
+
+  it("no file at all is silence — the layer is opt-in", () => {
+    expect(declaredPathspecs(tmp("ap-decl-none-"))).toEqual({ specs: [], rejected: [] });
   });
 });

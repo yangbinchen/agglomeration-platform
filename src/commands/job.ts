@@ -20,7 +20,7 @@ import { envNum } from "../core/env.js";
 import { pickRandomAgent } from "../core/agents.js";
 import { deriveSlug } from "../core/quick.js";
 import { livePaneNonces, ownsPane, pinExport, sessionExists, sessionPaneIds, killSession, validSessionName, currentSessionName } from "../core/tmux.js";
-import { pinReport, shadowHits } from "../core/provision.js";
+import { pinReport, provisionDeclared, shadowHits } from "../core/provision.js";
 import { paneMetaRead, paneMetaReadForDir, outboxPath, statusPath, type Clock, type OutboxEvent } from "../core/ipc.js";
 import { liveOutboxWait } from "../core/waitLive.js";
 import { scanTopicWorkers } from "../core/workerLiveness.js";
@@ -180,11 +180,11 @@ function reportShadows(root: string, worktree: string, deps: EnvDeps): { shadows
 }
 
 /** Everything a freshly `git worktree add`ed tree gets before a worker is pointed at it: the
- *  node_modules clone and the shadow/pin report. One helper because a SLICE worktree
+ *  node_modules clone, the declared gitignored artifacts and the shadow/pin report. One helper because a SLICE worktree
  *  (`implement spawn-slices`) must be provisioned exactly as the run worktree is — a second
  *  implementation is how the two start differing on the box where it matters. `root` is always the
  *  MAIN checkout: `pinReport` is provenance-gated on it. */
-export function provisionWorktree(root: string, worktree: string, r: Runner, envDeps: EnvDeps = realEnvDeps()): { shadows: string[]; pin: string } {
+export function provisionWorktree(root: string, worktree: string, r: Runner, envDeps: EnvDeps = realEnvDeps()): { shadows: string[]; pin: string; provisioned: string[] } {
   // node_modules is the one dependency tree worth carrying: a hardlink clone is seconds and costs no
   // disk, and without it the worker's first act is a multi-minute install. Any other ecosystem is
   // the worker's own problem (D3), and a failure here is never fatal — the worker can still install.
@@ -204,7 +204,16 @@ export function provisionWorktree(root: string, worktree: string, r: Runner, env
     if (mode) log.ok(`job start: ${mode} node_modules into the worktree`);
     else log.warn(`job start: could not clone node_modules into ${worktree} (cp -al, -cR and -R all failed) — the worker will have to install dependencies itself`);
   }
-  return reportShadows(root, worktree, envDeps);
+  // WHICH files crossed, never a count: `--others --ignored` is where `.env` and credentials live,
+  // and the operator has to see what landed in a directory an autonomous TUI works in.
+  const dec = provisionDeclared(root, worktree, r);
+  for (const w of dec.warnings) log.warn(`job start: ${w}`);
+  if (dec.provisioned.length) {
+    const shown = dec.provisioned.slice(0, 10);
+    const more = dec.provisioned.length - shown.length;
+    log.ok(`job start: provisioned ${dec.provisioned.length} declared gitignored artifact(s) into the worktree: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`);
+  }
+  return { ...reportShadows(root, worktree, envDeps), provisioned: dec.provisioned };
 }
 
 /** Create the worktree the WORKER will run in, and return what the record must carry.
@@ -226,7 +235,7 @@ export function provisionWorktree(root: string, worktree: string, r: Runner, env
  *
  *  `null` means ABORT the start. Every failure here is fail-closed: a half-made worktree would send
  *  the worker into the main checkout, which is the exact thing this exists to prevent. */
-export function startWorktree(root: string, topic: string, r: Runner, envDeps: EnvDeps = realEnvDeps()): { worktree: string; baseSha: string; shadows: string[]; pin: string } | null {
+export function startWorktree(root: string, topic: string, r: Runner, envDeps: EnvDeps = realEnvDeps()): { worktree: string; baseSha: string; shadows: string[]; pin: string; provisioned: string[] } | null {
   const head = r.run("git", ["rev-parse", "HEAD"]);
   const baseSha = head.stdout.trim();
   if (head.code !== 0 || !baseSha) {
@@ -572,6 +581,7 @@ export async function startRun(rest: string[], origCwd: string, deps: EnvDeps = 
     // Omitted when empty, never written as [] / "": a clean-box record stays byte-identical (A5).
     ...(wt?.shadows.length ? { python_shadow: wt.shadows } : {}),
     ...(wt?.pin ? { python_pin: wt.pin } : {}),
+    ...(wt?.provisioned.length ? { provisioned: wt.provisioned } : {}),
   };
   mkdirSync(jobDir(topic), { recursive: true });
   // The record is written BEFORE the spawn on purpose: a spawn that dies half-way leaves evidence
