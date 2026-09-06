@@ -19,6 +19,45 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 
 ---
 
+## What's new
+
+The most recent releases, newest first. Every entry has a dated design record under
+`docs/superpowers/specs/`; the full history is `git log`.
+
+- **0.5.85 — 2026-09-06 · Detached `implement`: the job hub's own rules.** The waits, the relay,
+  the park, the sends and every rc-bearing verb are the hub's own turn; a slice's claim check runs
+  inside that slice's worktree; one park at a time, so a second question is never swallowed by the
+  relay's cursor; roster-mutating verbs run one at a time.
+- **0.5.84 — 2026-09-05 · Detached `quick`: worktree-aware delegation.** The job brief tells the
+  hub that its own pane sits in the main checkout, so every command about the run's code names the
+  worktree; in-flight subagents are cancelled before any terminal event; the reply to a worker's
+  question is the hub's own attestation.
+- **0.5.82 — 2026-09-05 · One session, one window.** A detached `implement` run's slice workers
+  are panes in the job hub's window — hub on the left, the lead and every slice stacked evenly on
+  the right, the layout `/ap:design` has — never a second window. The detached session is created
+  at 240×100 so the stack fits before you attach; a window too small for the lead plus every slice
+  degrades to the serial path with a `parallel-degraded` flag.
+- **0.5.73–0.5.83 — 2026-09-05 · The delegation contract.** Every worker identity, the detached
+  job hub and every attached hub (design on both its paths, quick, implement, explore, bridge,
+  autoresearch) carry one rule for models with an orchestrator/executor split (codex's Astra→Sol,
+  Claude's Fable→Opus): grind — reading diffs, logs and artifacts, repository sweeps,
+  implementation against a brief — goes to cheaper execution subagents, while the brief, the
+  verdict, the gate run and every citation stay first-hand. Along the way autoresearch's stale
+  probe stopped clobbering the worker's done contract, and a queued `stale`/`stuck` is superseded
+  by a newer `done` (0.5.75, 0.5.81).
+- **0.5.70–0.5.72 — 2026-09-04/05 · Parallel slices.** On a detached `implement` run the lead
+  writes the plan with a Slices proposal, the job hub groups the tasks (up to 6 slices, no flag, no
+  worker count to choose), each slice implements in its own worktree and branch, `integrate` merges
+  them and the lead absorbs what is left. A plan that does not split falls back to the single lead
+  at the cost of one plan turn. A premature `done` is held on pane activity instead of failing the
+  turn.
+- **0.5.66–0.5.68 — 2026-09-03/04 · Worktree environment parity, prompt audit.** `job start`
+  detects a `.pth` or editable install that resolves the repo from your main checkout and pins
+  `PYTHONPATH` to the worktree for the worker and for the hub's own gate; a directive-wide prompt
+  audit fixed five real prompt bugs.
+
+---
+
 ## The picture
 
 ```mermaid
@@ -227,10 +266,11 @@ monitor, not a shell, so it can be parked and re-armed across your session's res
 run itself never notices.
 
 ```
-your session (the origin hub)             tmux session ap-<topic> (detached)
-  /ap:implement <doc> --detached  ──▶     window 0: claude TUI — the job hub, runs the pipeline
-  /ap:job status|attach|relay             window 1: codex/claude TUI — the worker
-  …free for other work…                   (tmux attach -t ap-<topic> to watch either, live)
+your session (the origin hub)             tmux session ap-<topic> (detached) — one window
+  /ap:implement <doc> --detached  ──▶     left:  claude TUI — the job hub, runs the pipeline
+  /ap:job status|attach|relay             right: the lead worker's TUI, and on a fanned-out
+  …free for other work…                          implement run one more pane per slice worker
+                                          (tmux attach -t ap-<topic> to watch them all, live)
 ```
 
 The unattended envelope is deliberately tighter than an attended run:
@@ -248,6 +288,13 @@ The unattended envelope is deliberately tighter than an attended run:
     for the hub's own test re-run, and the brief tells the hub to prefix the same pin on anything it
     runs itself. Gitignored build products still do not come across — the brief says to rebuild
     them in the worktree — and `job stop` keeps a worktree an editable install has been pointed at.
+- **An `implement` job fans out when the plan allows it.** The lead writes `plan.md` with a Slices
+  proposal, the job hub groups the tasks (up to 6 slices; there is no flag and no worker count to
+  choose), and each slice implements its own tasks in its own worktree at
+  `.ap/worktrees/<topic>.<agent>` and its own pane on the right. `integrate` merges the slice
+  branches into the run branch and the lead absorbs conflicts, abandoned tasks and out-of-slice
+  changes in one more turn. A plan that does not split — a linear dependency chain — runs serially
+  with the lead and files a `parallel-degraded` flag; you lose one plan turn, nothing else.
 - **Nothing merges or publishes while nobody is watching.** The finish action is locked to `keep` —
   mechanically, in the finish verbs, not just in prose, and with no flag to loosen it — so the run
   ends on its `feat/...` branch and *you* run the finish menu afterwards. When you do, integrate
@@ -515,6 +562,13 @@ There are **two roots**:
   messages and `END_OF_ARTIFACT` on artifacts. The wire protocol is **frozen** so external model
   binaries stay drop-in. A worker's inbox is its **only** task channel — instructions arriving any
   other way (another session, its terminal, a file it was asked to read) are flagged and ignored.
+- **One delegation contract, carried by every identity.** Workers, the job hub and every attached
+  hub follow the same rule for models with an orchestrator/executor split: grind goes to cheaper
+  execution subagents, while the brief, the verdict, the gate run and every citation stay
+  first-hand — a subagent may enumerate what to open, never originate a citation. The waits,
+  relays, parks, sends and rc-bearing verbs are the hub's own turn, and a worker's outbox, status
+  and named outputs have exactly one writer. The record is
+  `docs/superpowers/specs/2026-09-05-worker-delegation-reminder-design.md`.
 - **One wait for every worker turn.** `src/core/wait.ts` owns it: a turn/round/phase wait resolves
   its offset, picks its terminal event and applies its still-writing protections (`AP_TURN_CONFIRM_S`
   and `AP_ARTIFACT_GRACE_S`) in one place, with the clock injected at the engine so the wait's own
@@ -528,7 +582,7 @@ There are **two roots**:
 
 ```
 npm run typecheck   # tsc --noEmit
-npm run test        # vitest run   (2,475 tests)
+npm run test        # vitest run   (3,344 tests)
 npm run lint        # eslint
 npm run build       # esbuild -> dist/ap.cjs  (commit the result)
 ```
