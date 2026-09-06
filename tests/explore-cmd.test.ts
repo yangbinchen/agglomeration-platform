@@ -95,7 +95,7 @@ const BROKEN_LEGS: Array<{
     break: (i, m, t) => { rmSync(paneMetaPath(i, m, t), { force: true }); return {}; },
     why: "no pane.json",
   },
-  { name: "the pane is gone", break: () => ({ paneOwned: async () => false }), why: "is gone" },
+  { name: "the pane is gone", break: () => ({ paneLive: async () => false }), why: "is gone" },
 ];
 
 /** A worker artifact as the completeness contract requires it: body + the sentinel as its LAST
@@ -451,7 +451,7 @@ describe("explore phase send/wait skeleton (table-driven over PHASES)", () => {
           const send = vi.fn(async () => 0);
           const err = captureStderr();
           try {
-            expect(await s.send(TOPIC, AGENT, PROVIDER, sendDeps({ offsetFor: () => 4, send, paneOwned: async () => true }))).toBe(0);
+            expect(await s.send(TOPIC, AGENT, PROVIDER, sendDeps({ offsetFor: () => 4, send, paneLive: async () => true }))).toBe(0);
           } finally { err.restore(); }
           expect(send).toHaveBeenCalled();
           expect(readFileSync(stateFile(), "utf8")).toBe("OFFSET=4\n");
@@ -469,7 +469,7 @@ describe("explore phase send/wait skeleton (table-driven over PHASES)", () => {
             const send = vi.fn(async () => 0);
             const err = captureStderr();
             try {
-              expect(await s.send(TOPIC, AGENT, PROVIDER, sendDeps({ send, paneOwned: async () => true, ...over }))).toBe(0);
+              expect(await s.send(TOPIC, AGENT, PROVIDER, sendDeps({ send, paneLive: async () => true, ...over }))).toBe(0);
             } finally { err.restore(); }
             expect(send).not.toHaveBeenCalled();
             expect(readFileSync(stateFile(), "utf8")).toBe(`${KEY}=skipped\n`);

@@ -663,7 +663,7 @@ describe("autoresearch experiment-send", () => {
     const h = home();
     const { sd } = scaffold(h);
     const rc = await experimentSendWith([TOPIC, INST, "exp-006", "x", "y"],
-      deps(h, { dryRun: false, paneOwned: async () => true, paneSend: async () => { throw new Error("tmux down"); } }));
+      deps(h, { dryRun: false, paneLive: async () => true, paneSend: async () => { throw new Error("tmux down"); } }));
     expect(rc).toBe(0);
     expect(readFileSync(inboxPath(INST, MODEL, TOPIC), "utf8")).toContain("END_OF_INSTRUCTION");
     expect(readFileSync(join(sd, "state.txt"), "utf8")).toContain("phase=working");
@@ -938,7 +938,7 @@ describe("autoresearch monitor", () => {
     // Inject a probe that reports the pane dead + a 0ms tick + per-tick checks: the loop must exit
     // after two consecutive dead probes instead of polling forever. (Fails via the vitest timeout.)
     const { rc } = await capture(() => monitorRun([TOPIC, INST], {
-      ...opts(h), paneOwned: async () => false, sleepMs: 0, paneCheckEveryTicks: 1,
+      ...opts(h), paneLive: async () => false, sleepMs: 0, paneCheckEveryTicks: 1,
     }));
     expect(rc).toBe(0);
   });
@@ -950,7 +950,7 @@ describe("autoresearch monitor", () => {
     // only a sustained death stops the loop (no false early-exit on a transient blip).
     let calls = 0;
     const { rc } = await capture(() => monitorRun([TOPIC, INST], {
-      ...opts(h), paneOwned: async () => (++calls <= 3 ? calls % 2 === 1 : false), sleepMs: 0, paneCheckEveryTicks: 1,
+      ...opts(h), paneLive: async () => (++calls <= 3 ? calls % 2 === 1 : false), sleepMs: 0, paneCheckEveryTicks: 1,
     }));
     expect(rc).toBe(0);
     expect(calls).toBeGreaterThan(3);   // ran past the alive probes before the sustained death exit
@@ -965,7 +965,7 @@ describe("autoresearch monitor", () => {
     writeFileSync(join(pd, "pane.json"), JSON.stringify({ pane_id: "%1", agent: INST, model: MODEL }));
     const probe = vi.fn(async () => false);
     const { rc } = await capture(() => monitorRun([TOPIC, INST], {
-      ...opts(h), paneOwned: probe, sleepMs: 0, paneCheckEveryTicks: 1, maxTicks: 6,
+      ...opts(h), paneLive: probe, sleepMs: 0, paneCheckEveryTicks: 1, maxTicks: 6,
     }));
     expect(rc).toBe(0);
     expect(probe).not.toHaveBeenCalled();   // would have been called 6x, and exited at 2, before the fix

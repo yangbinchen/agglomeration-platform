@@ -66,12 +66,17 @@ export async function teardownBatch(topic: string, pairs: Pair[], d: StopDeps): 
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-function liveDeps(): StopDeps {
+/** The live bindings. Exported, and the tmux probes bound by IDENTITY rather than wrapped in a
+ *  closure, so a test can assert that the batch reads the OWNERSHIP snapshot: under `alivePaneNonces`
+ *  every dead-but-ours pane is dropped from the map and `teardownBatch` skips it (`if
+ *  (!live.has(owner.paneId)) continue`), leaving exactly the panes `remain-on-exit` keeps standing
+ *  unreaped. `killGraceful` stays wrapped — it takes `pluginRoot()`, which is not a dep. */
+export function liveDeps(): StopDeps {
   return {
     paneMetaRead: (i, m, t) => paneMetaRead(i, m, t),
-    livePaneNonces: () => livePaneNonces(),
+    livePaneNonces,
     killGraceful: (p, owned) => killGraceful(p, pluginRoot(), owned),
-    killNow: (p) => killNow(p),
+    killNow,
     stateArchive: (i, m, t, suffix) => stateArchive(i, m, t, suffix),
     sleep,
     readLastPane: (t) => { const f = join(topicDir(t), ".last_pane"); return readIfExists(f).trim(); },

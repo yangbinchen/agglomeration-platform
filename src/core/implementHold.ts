@@ -13,7 +13,7 @@ import {
   type Clock, type OutboxEvent, type PaneOwner, type WaitLivenessOpts,
 } from "./ipc.js";
 import { awaitTurn, type WaitFn } from "./wait.js";
-import { paneOwned } from "./tmux.js";
+import { paneLive } from "./tmux.js";
 import { readIfExistsOrNull } from "./fsread.js";
 import { isoUtc } from "./archive.js";
 
@@ -77,9 +77,10 @@ export interface HoldDeps {
  *  bound (the default `AP_WAIT_EXTEND_MULT=3` would stretch a held leg to 12h), and the pane-idle
  *  probe on `onPoll` is the only thing that can end a hold before that deadline. `paneAlive` closes
  *  over the RECORDED nonce, so a pane id tmux has since handed to another program cannot read as
- *  "the worker is alive". */
+ *  "the worker is alive" — and it is `paneLive`, not `paneOwned`: a pane kept by `remain-on-exit`
+ *  after its worker exited is still ours, and a hold must not sit on it until the turn deadline. */
 export function holdWaitOpts(pane: PaneOwner, probe: () => Promise<OutboxEvent | null>): WaitLivenessOpts {
-  return { paneAlive: (p) => paneOwned(p, pane.nonce), paneId: pane.paneId, extendMult: 1, onPoll: probe };
+  return { paneAlive: (p) => paneLive(p, pane.nonce), paneId: pane.paneId, extendMult: 1, onPoll: probe };
 }
 
 export interface LiveRearmDeps {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as T from "../src/core/tmux.js";
@@ -148,6 +148,43 @@ describe("pane ownership nonce", () => {
     // No tmux server is reachable in the suite: reaching tmux would reject, not return false.
     await expect(T.paneOwned("%1", "")).resolves.toBe(false);
   });
+  it("paneLive short-circuits the same way — an unverifiable nonce is not a liveness answer", async () => {
+    await expect(T.paneLive("%1", "")).resolves.toBe(false);
+  });
+
+  // Every ap pane is created with `remain-on-exit on`, so tmux keeps the pane of a worker that
+  // exited. Presence therefore stopped being a liveness answer, and one snapshot has to carry both:
+  // OWNED (a dead pane is still ours, so `stop` reaps it) and ALIVE (it is not a running worker).
+  describe("parsePaneSnapshot — owned and alive are different questions", () => {
+    it("a DEAD pane carrying our nonce is OURS but is NOT alive", () => {
+      const s = T.parsePaneSnapshot(`%1\t0\n%2\t1\n`, `%1\t${OURS}\n%2\t${OURS}\n`);
+      expect(T.ownsPane(s.nonces, "%2", OURS)).toBe(true);    // teardown must still reap it
+      expect(T.ownsPane(s.alive, "%2", OURS)).toBe(false);    // no probe may call it a live worker
+      expect(T.ownsPane(s.nonces, "%1", OURS)).toBe(true);    // a live pane answers both
+      expect(T.ownsPane(s.alive, "%1", OURS)).toBe(true);
+    });
+    it("a forged @ap_nonce row cannot mark a pane dead — only tmux's own listing carries that column", () => {
+      // %1's @ap_nonce holds a newline, so the OPTION listing gains a `%2\t1` row. Deadness is read
+      // from the id listing alone, so %2 stays alive (the duplicate rule still poisons its nonce,
+      // which is the pre-existing fail-closed direction and not a death verdict).
+      const s = T.parsePaneSnapshot(`%1\t0\n%2\t0\n`, `%1\t${OURS}\n%2\t1\n%2\t${OURS}\n`);
+      expect(s.alive.has("%2")).toBe(true);
+      expect(s.nonces.has("%2")).toBe(true);
+    });
+    it("a pane the id listing never named is in neither map", () => {
+      const s = T.parsePaneSnapshot(`%1\t0\n`, `%1\t${OURS}\n%9\t${OURS}\n`);
+      expect(s.nonces.has("%9")).toBe(false);
+      expect(s.alive.has("%9")).toBe(false);
+    });
+    it("a tmux that drops the dead field reads as ALIVE — never a fabricated death", () => {
+      const s = T.parsePaneSnapshot(`%1\n`, `%1\t${OURS}\n`);
+      expect(T.ownsPane(s.alive, "%1", OURS)).toBe(true);
+    });
+  });
+
+  it("paneRemainOnExitArgs: the per-pane set-option spawn stamps after the nonce", () => {
+    expect(T.paneRemainOnExitArgs("%7")).toEqual(["set-option", "-p", "-t", "%7", "remain-on-exit", "on"]);
+  });
 });
 
 // CI (and any headless box, container, or user who has not started tmux) has NO tmux server. The
@@ -184,12 +221,87 @@ describe("no tmux server / no tmux at all", () => {
   it("an empty snapshot stays fail-closed: it means NOT ours, never assume-ours", async () => {
     expect(T.ownsPane(new Map(), "%1", "11111111-1111-4111-8111-111111111111")).toBe(false);
   });
+  it("paneRemainOnExitSet reports failure instead of throwing — the caller warns and spawns anyway", async () => {
+    await withFakeTmux(NO_SERVER, async () => {
+      await expect(T.paneRemainOnExitSet("%1")).resolves.toBe(false);
+    });
+    await withFakeTmux("#!/bin/sh\nexit 0\n", async () => {
+      await expect(T.paneRemainOnExitSet("%1")).resolves.toBe(true);
+    });
+  });
+  it("alivePaneNonces answers with an EMPTY map on a serverless box, exactly as livePaneNonces does", async () => {
+    await withFakeTmux(NO_SERVER, async () => {
+      await expect(T.alivePaneNonces()).resolves.toEqual(new Map());
+      await expect(T.paneLive("%1", "11111111-1111-4111-8111-111111111111")).resolves.toBe(false);
+    });
+  });
   it("paneNonceSet reports failure instead of throwing (the caller fails closed on it)", async () => {
     await withFakeTmux(NO_SERVER, async () => {
       await expect(T.paneNonceSet("%1", "11111111-1111-4111-8111-111111111111")).resolves.toBe(false);
     });
     await withFakeTmux("#!/bin/sh\nexit 0\n", async () => {
       await expect(T.paneNonceSet("%1", "11111111-1111-4111-8111-111111111111")).resolves.toBe(true);
+    });
+  });
+});
+
+// The owned/live split, pinned END TO END against a tmux that ANSWERS — the pure parser tests above
+// cannot see which map a probe reads. %5 is dead-but-ours (`remain-on-exit` kept its screen), %6 is
+// alive: the one pane shape where OWNERSHIP and LIVENESS disagree, and therefore the only shape that
+// catches a probe rebound to the wrong map.
+describe("owned vs live, through a tmux that answers", () => {
+  const N5 = "55555555-5555-4555-8555-555555555555";
+  const N6 = "66666666-6666-4666-8666-666666666666";
+  // Answers both listings: the unforgeable id+dead list marks %5 dead, the option list gives nonces.
+  // Every invocation is appended to __LOG__, so a test can count the calls one snapshot costs.
+  const ANSWERING = [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$*\" >> __LOG__",
+    "case \"$*\" in",
+    `  *pane_dead*) printf '%s\\n' '%5\t1' '%6\t0' ;;`,
+    `  *ap_nonce*) printf '%s\\n' '%5\t${N5}' '%6\t${N6}' ;;`,
+    "esac",
+    "exit 0",
+  ].join("\n") + "\n";
+
+  async function withAnsweringTmux<R>(fn: (calls: () => string[]) => Promise<R>): Promise<R> {
+    const dir = mkdtempSync(join(tmpdir(), "ap-answer-"));
+    const logFile = join(dir, "argv.log");
+    writeFileSync(join(dir, "tmux"), ANSWERING.replace("__LOG__", logFile), { mode: 0o755 });
+    const orig = process.env.PATH;
+    process.env.PATH = dir;   // ONLY the stub is reachable
+    try {
+      return await fn(() => (existsSync(logFile) ? readFileSync(logFile, "utf8").trim().split("\n") : []));
+    } finally { process.env.PATH = orig; }
+  }
+
+  it("a dead-but-ours pane: OWNED yes, LIVE no — the two probes must not answer alike", async () => {
+    await withAnsweringTmux(async () => {
+      expect(await T.paneOwned("%5", N5)).toBe(true);    // still ap's to reap
+      expect(await T.paneLive("%5", N5)).toBe(false);    // its worker is gone
+      expect(await T.paneOwned("%6", N6)).toBe(true);
+      expect(await T.paneLive("%6", N6)).toBe(true);
+    });
+  });
+
+  it("the two snapshots differ by exactly the dead pane", async () => {
+    await withAnsweringTmux(async () => {
+      const owned = await T.livePaneNonces();
+      const alive = await T.alivePaneNonces();
+      expect(owned.get("%5")).toBe(N5);
+      expect(alive.has("%5")).toBe(false);              // dropped: dead
+      expect(alive.get("%6")).toBe(N6);
+      expect([...owned.keys()]).toEqual(["%5", "%6"]);
+    });
+  });
+
+  it("paneSnapshot: BOTH columns from ONE pair of list-panes calls, so they cannot disagree", async () => {
+    await withAnsweringTmux(async (calls) => {
+      const snap = await T.paneSnapshot();
+      expect(calls().filter((c) => c.startsWith("list-panes"))).toHaveLength(2);
+      expect(snap.nonces.get("%5")).toBe(N5);
+      expect(snap.alive.has("%5")).toBe(false);
+      expect(snap.alive.get("%6")).toBe(N6);
     });
   });
 });

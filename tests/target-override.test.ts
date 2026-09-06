@@ -118,7 +118,7 @@ describe("implement init --target", () => {
 });
 
 describe("quick --target", () => {
-  const deps = { haveCmd: () => true, agentBinary: () => "codex", pickRandomAgent: () => "alpha", livePanes: async () => new Map<string, string>(), branchSha: () => "" };
+  const deps = { haveCmd: () => true, agentBinary: () => "codex", pickRandomAgent: () => "alpha", alivePanes: async () => new Map<string, string>(), ownedPanes: async () => new Map<string, string>(), killPane: async () => {}, branchSha: () => "" };
 
   it("init ECHOES the override as TARGET= — the directive passes it straight on to branch", async () => {
     const root = repo();

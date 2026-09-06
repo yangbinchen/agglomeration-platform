@@ -662,6 +662,9 @@ function sessionPanesArgs(session) {
 function setOptionArgs(pane, opt, val) {
   return ["set-option", "-p", "-t", pane, opt, val];
 }
+function paneRemainOnExitArgs(pane) {
+  return setOptionArgs(pane, "remain-on-exit", "on");
+}
 function paneNonceSetArgs(pane, nonce) {
   return setOptionArgs(pane, "@ap_nonce", nonce);
 }
@@ -685,6 +688,22 @@ function parsePaneNonces(stdout, realIds) {
   }
   for (const id of dup) m.set(id, "");
   return m;
+}
+function parsePaneDead(stdout) {
+  const m = /* @__PURE__ */ new Map();
+  for (const line of stdout.split("\n")) {
+    if (!line) continue;
+    const tab = line.indexOf("	");
+    const id = tab < 0 ? line : line.slice(0, tab);
+    if (!PANE_ID_RE.test(id)) continue;
+    m.set(id, tab >= 0 && line.slice(tab + 1) === "1");
+  }
+  return m;
+}
+function parsePaneSnapshot(idsOut, pairsOut) {
+  const dead = parsePaneDead(idsOut);
+  const nonces = parsePaneNonces(pairsOut, new Set(dead.keys()));
+  return { nonces, alive: new Map([...nonces].filter(([id]) => !dead.get(id))) };
 }
 function ownsPane(snapshot, pane, nonce) {
   return NONCE_RE.test(nonce) && snapshot.get(pane) === nonce;
@@ -785,26 +804,36 @@ async function ensureWindowBorderStatus(target) {
     return false;
   }
 }
-async function livePaneNonces() {
+async function paneSnapshot() {
   return livePaneOption("@ap_nonce");
+}
+async function livePaneNonces() {
+  return (await paneSnapshot()).nonces;
+}
+async function alivePaneNonces() {
+  return (await paneSnapshot()).alive;
 }
 async function livePaneOption(opt) {
   try {
     const [ids, pairs] = await Promise.all([
-      run(["list-panes", "-a", "-F", "#{pane_id}"]),
+      run(["list-panes", "-a", "-F", "#{pane_id}	#{pane_dead}"]),
       run(["list-panes", "-a", "-F", `#{pane_id}	#{${opt}}`])
     ]);
-    return parsePaneNonces(pairs, new Set(ids.split("\n").filter(Boolean)));
+    return parsePaneSnapshot(ids, pairs);
   } catch {
-    return /* @__PURE__ */ new Map();
+    return { nonces: /* @__PURE__ */ new Map(), alive: /* @__PURE__ */ new Map() };
   }
 }
 async function paneStateRead(pane) {
-  return (await livePaneOption("@ap_state")).get(pane) ?? "";
+  return (await livePaneOption("@ap_state")).nonces.get(pane) ?? "";
 }
 async function paneOwned(pane, nonce) {
   if (!NONCE_RE.test(nonce)) return false;
   return ownsPane(await livePaneNonces(), pane, nonce);
+}
+async function paneLive(pane, nonce) {
+  if (!NONCE_RE.test(nonce)) return false;
+  return ownsPane(await alivePaneNonces(), pane, nonce);
 }
 async function killPreflightOrphans(art, deps, label) {
   const pf = (0, import_node_path3.join)(art, "preflight-panes.txt");
@@ -832,6 +861,14 @@ async function paneNonceSet(pane, nonce) {
 async function paneStateSet(pane, dir) {
   try {
     await run(paneStateSetArgs(pane, dir));
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function paneRemainOnExitSet(pane) {
+  try {
+    await run(paneRemainOnExitArgs(pane));
     return true;
   } catch {
     return false;
@@ -9431,6 +9468,8 @@ function captureSpawnFailure(opts) {
       { source: "spawn_failure", key: `reason=${opts.reason} ${opts.detail}`.replace(/\s+/g, " ").trim(), context: ctx }
     ];
     if (opts.failureReportPath) findings.push({ source: "spawn_failure", key: `failure_report=${opts.failureReportPath}`, context: ctx });
+    const tail = scrubSecrets(opts.paneTail ?? "").split("\n").filter((l) => l.trim()).slice(-15).join("\n");
+    if (tail) findings.push({ source: "spawn_failure", key: `pane_tail=${encodeURIComponent(tail)}`, context: ctx });
     const art = workerDir(opts.agent, opts.model, opts.topic);
     return fileFinding(
       "spawn_failure",
@@ -10602,7 +10641,7 @@ async function dispatchVerb(args, deps) {
     return 1;
   }
   const pane = owner.paneId;
-  if (!await deps.paneOwned(pane, owner.nonce)) {
+  if (!await deps.paneLive(pane, owner.nonce)) {
     log.error(`${agent}'s pane ${pane} is gone or is no longer ours (orphan); run ap stop ${agent} ${topic}`);
     return 1;
   }
@@ -10646,7 +10685,7 @@ var init_send = __esm({
     init_ipc();
     init_tmux();
     init_slug();
-    liveSendCmdDeps = { paneOwned, paneSend, paneState: paneStateRead };
+    liveSendCmdDeps = { paneLive, paneSend, paneState: paneStateRead };
   }
 });
 
@@ -10654,6 +10693,7 @@ var init_send = __esm({
 var spawn_exports = {};
 __export(spawn_exports, {
   READY_EVENTS: () => READY_EVENTS,
+  READY_WAIT_DEPS: () => READY_WAIT_DEPS,
   SPAWN_KILLED_EXIT: () => SPAWN_KILLED_EXIT,
   bootstrapFailed: () => bootstrapFailed,
   bootstrapFailureDetail: () => bootstrapFailureDetail,
@@ -10668,6 +10708,7 @@ __export(spawn_exports, {
   resolveMode: () => resolveMode,
   run: () => run3,
   spawnKilled: () => spawnKilled,
+  stampOrFail: () => stampOrFail,
   validateSlug: () => validateSlug,
   withSigtermGuard: () => withSigtermGuard
 });
@@ -10712,7 +10753,10 @@ function parseSpawnArgs(args) {
 }
 async function stampOrFail(pane, nonce, agent, model, topic) {
   const missing = !await paneNonceSet(pane, nonce) ? "@ap_nonce" : !await paneStateSet(pane, paneStateStamp(agent, model, topic)) ? "@ap_state" : "";
-  if (!missing) return true;
+  if (!missing) {
+    if (!await paneRemainOnExitSet(pane)) log.warn(`could not set remain-on-exit on ${pane}; if this worker dies at bootstrap its pane will close and take its last lines with it`);
+    return true;
+  }
   captureSpawnFailure({ agent, model, topic, reason: "pane_failed", detail: `could not stamp ${missing} on ${pane}` });
   await killNow(pane);
   log.error(`could not stamp the ownership nonce on ${pane} (tmux unreachable?): ${missing} was refused; the pane was torn down rather than left unownable \u2014 check for a stray pane with: tmux list-panes -a`);
@@ -10801,7 +10845,9 @@ ${ob}
     topic,
     reason,
     detail: bootstrapFailureDetail(ev),
-    failureReportPath: fr.ok ? fr.path : void 0
+    failureReportPath: fr.ok ? fr.path : void 0,
+    paneTail: tail
+    // the capture from above, not a second one: the pane is killed a few lines down
   });
   await deps.killNow(pane);
   deps.writeWorkerStatus(agent, model, topic, "error", "bootstrap-failed");
@@ -10970,7 +11016,7 @@ async function dispatchVerb2(args) {
     log.info(`waiting for {ready,error} in outbox (timeout ${readyTimeout}s)`);
     const ev = await withSigtermGuard(
       () => spawnKilled({ agent, model, topic, pane, readyTimeout }, realSpawnKilledDeps()),
-      () => readyWait({ agent, model, topic, pane, nonce, readyTimeout }, { wait: outboxWaitSince, paneAlive: paneOwned })
+      () => readyWait({ agent, model, topic, pane, nonce, readyTimeout }, READY_WAIT_DEPS)
     );
     if (!ev || ev.event === "error") {
       return await bootstrapFailed({ agent, model, topic, pane, readyTimeout }, ev, realSpawnKilledDeps());
@@ -10996,7 +11042,7 @@ ${sessionLine}  state:   ${workerDir(agent, model, topic)}
     throw e;
   }
 }
-var import_node_fs17, import_node_crypto5, import_node_path13, sleep, READY_EVENTS, SPAWN_KILLED_EXIT, bootstrapFailureDetail;
+var import_node_fs17, import_node_crypto5, import_node_path13, sleep, READY_EVENTS, SPAWN_KILLED_EXIT, READY_WAIT_DEPS, bootstrapFailureDetail;
 var init_spawn = __esm({
   "src/commands/spawn.ts"() {
     "use strict";
@@ -11024,6 +11070,7 @@ var init_spawn = __esm({
     sleep = (ms3) => new Promise((r) => setTimeout(r, ms3));
     READY_EVENTS = ["ready", "error"];
     SPAWN_KILLED_EXIT = 143;
+    READY_WAIT_DEPS = { wait: outboxWaitSince, paneAlive: paneLive };
     bootstrapFailureDetail = (ev) => ev ? JSON.stringify(ev) : NO_EVENT_SENTINEL;
   }
 });
@@ -11222,13 +11269,13 @@ async function dispatchVerb4(args) {
   process.stdout.write(`${"-".repeat(32)} ${"-".repeat(8)} ${"-".repeat(12)} ${"-".repeat(9)} ${"-".repeat(12)} --------
 `);
   const threshold = staleThresholdS();
-  const live = await livePaneNonces();
+  const { nonces: live, alive } = await paneSnapshot();
   const now = Date.now();
   for (const t of (0, import_node_fs19.readdirSync)(repo, { withFileTypes: true })) {
     if (!t.isDirectory()) continue;
     if (filter && t.name !== filter) continue;
     const td = (0, import_node_path15.join)(repo, t.name);
-    const liveness = new Map(scanTopicWorkers(t.name, live, now).map((w) => [w.worker, w.verdict]));
+    const liveness = new Map(scanTopicWorkers(t.name, alive, now).map((w) => [w.worker, w.verdict]));
     for (const p of (0, import_node_fs19.readdirSync)(td, { withFileTypes: true })) {
       if (!p.isDirectory() || isArtifactDir(p.name)) continue;
       const dir = (0, import_node_path15.join)(td, p.name);
@@ -11240,10 +11287,10 @@ async function dispatchVerb4(args) {
 `);
     }
   }
-  writeJobsSection(repo, live, filter, W);
+  writeJobsSection(repo, alive, filter, W);
   return 0;
 }
-function writeJobsSection(repo, live, filter, W) {
+function writeJobsSection(repo, alive, filter, W) {
   const rows = [];
   for (const t of (0, import_node_fs19.readdirSync)(repo, { withFileTypes: true })) {
     if (!t.isDirectory()) continue;
@@ -11251,7 +11298,7 @@ function writeJobsSection(repo, live, filter, W) {
     const rec = parseJob(readIfExists(jobPath(t.name)));
     if (!rec) continue;
     const hub = `${rec.hub.agent}-${rec.hub.model}`;
-    const liveness = classifyJobLiveness(live, paneMetaReadForDir((0, import_node_path15.join)(repo, t.name, hub)));
+    const liveness = classifyJobLiveness(alive, paneMetaReadForDir((0, import_node_path15.join)(repo, t.name, hub)));
     rows.push(`${W(rec.topic, 24)} ${W(rec.command, 10)} ${W(hub, 20)} ${W(rec.session, 24)} ${liveness}`);
   }
   if (rows.length === 0) return;
@@ -11284,6 +11331,7 @@ var init_list = __esm({
 var stop_exports = {};
 __export(stop_exports, {
   GRACEFUL_BATCH_WAIT_MS: () => GRACEFUL_BATCH_WAIT_MS,
+  liveDeps: () => liveDeps,
   run: () => run6,
   teardownBatch: () => teardownBatch,
   teardownTopic: () => teardownTopic
@@ -11323,9 +11371,9 @@ async function teardownBatch(topic, pairs, d) {
 function liveDeps() {
   return {
     paneMetaRead: (i, m, t) => paneMetaRead(i, m, t),
-    livePaneNonces: () => livePaneNonces(),
+    livePaneNonces,
     killGraceful: (p, owned) => killGraceful(p, pluginRoot(), owned),
-    killNow: (p) => killNow(p),
+    killNow,
     stateArchive: (i, m, t, suffix) => stateArchive(i, m, t, suffix),
     sleep: sleep2,
     readLastPane: (t) => {
@@ -12239,7 +12287,7 @@ var init_env = __esm({
 function liveOutboxWait(i, m, t, offset, events, timeoutSec, clock, onPoll) {
   const owner = paneMetaRead(i, m, t);
   return outboxWaitSince(i, m, t, offset, events, timeoutSec, {
-    paneAlive: (p) => paneOwned(p, owner?.nonce ?? ""),
+    paneAlive: (p) => paneLive(p, owner?.nonce ?? ""),
     paneId: owner?.nonce ? owner.paneId : null,
     extendMult: envNum("AP_WAIT_EXTEND_MULT", 3),
     onPoll
@@ -12746,8 +12794,17 @@ async function initWith(tokens, d) {
   }
   if (stale) {
     const wdests = [];
+    const owned = await d.ownedPanes();
     try {
       for (const w of stale.workers) {
+        const pane = paneMetaReadForDir(w);
+        if (ownsPane(owned, pane.paneId, pane.nonce)) {
+          try {
+            await d.killPane(pane.paneId);
+          } catch (e) {
+            log.warn(`quick init: could not kill the dead pane ${pane.paneId} of the earlier attempt (${e.message}); it may still be on screen`);
+          }
+        }
         const wdest = archiveWorkerDir(w, slug, "stale");
         if (wdest) wdests.push(wdest);
       }
@@ -12824,7 +12881,7 @@ async function deadWorkers(topic, d) {
     if (workerBusyStateForDir(wd)) return null;
     const pane = paneMetaReadForDir(wd);
     if (!pane.paneId) return null;
-    snap ??= await d.livePanes();
+    snap ??= await d.alivePanes();
     if (ownsPane(snap, pane.paneId, pane.nonce)) return null;
     if (snap.size === 0 || snap.has(pane.paneId) && !verifiableNonce(pane.nonce)) return null;
     dead.push(wd);
@@ -13236,7 +13293,7 @@ var init_quick2 = __esm({
     init_fsread();
     init_branchRecord();
     init_implementScope();
-    liveInitDeps = { haveCmd, agentBinary, pickRandomAgent, livePanes: livePaneNonces, branchSha: branchShaAt };
+    liveInitDeps = { haveCmd, agentBinary, pickRandomAgent, alivePanes: alivePaneNonces, ownedPanes: livePaneNonces, killPane: killNow, branchSha: branchShaAt };
     STATE_RELATIVE_PREFIXES = ["_quick/", "_implement/", ".ap/"];
     STATE_FILE_BASENAMES = ["topic-text.txt", "task-brief.md"];
     CARRIED_RECORDS = ["findings.log", "issue.txt", "execute/start-branch.txt", "execute/stash-wip.txt"];
@@ -13826,7 +13883,7 @@ async function overrideEvidence(row, art, agent, unsafe, live) {
   if (!owner.nonce) return "pane.json predates ownership nonces (cannot confirm the pane)";
   let alive = false;
   try {
-    alive = await (live.paneOwned ?? paneOwned)(owner.paneId, owner.nonce);
+    alive = await (live.paneLive ?? paneLive)(owner.paneId, owner.nonce);
   } catch {
     alive = false;
   }
@@ -13872,7 +13929,7 @@ async function phaseSend(row, ctx, d, hooks) {
   };
   const untriggered = hooks.preGuard?.(io);
   if (untriggered) return skipDispatch(row, agent, stateFile, untriggered.skip);
-  if (await guardSkipped(row, art, agent, stateFile, { topic, provider, busyState: d.busyState, paneOwned: d.paneOwned })) return 0;
+  if (await guardSkipped(row, art, agent, stateFile, { topic, provider, busyState: d.busyState, paneLive: d.paneLive })) return 0;
   const prep = hooks.prepare(io);
   if ("fail" in prep) return prep.fail;
   if ("skip" in prep) return skipDispatch(row, agent, stateFile, prep.skip);
@@ -14204,7 +14261,7 @@ var init_phaseTable = __esm({
       offsetFor: (i, m, t) => outboxOffset(outboxPath(i, m, t)),
       send: run2,
       busyState: workerBusyState,
-      paneOwned
+      paneLive
     };
     liveWaitDeps = {
       multiplier: agentTimeoutMultiplier
@@ -15795,6 +15852,7 @@ __export(job_exports, {
   driftFor: () => driftFor,
   finishHint: () => finishHint,
   provisionWorktree: () => provisionWorktree,
+  realWaitDeps: () => realWaitDeps,
   relayRun: () => relayRun,
   run: () => run11,
   startRun: () => startRun,
@@ -16235,7 +16293,7 @@ function providerFallbackLine(rec) {
 async function statusRun(rest) {
   const rec = requireJob(rest[0], "status");
   if (!rec) return 1;
-  const live = await livePaneNonces();
+  const live = await alivePaneNonces();
   const liveness = classifyJobLiveness(live, paneMetaRead(rec.hub.agent, rec.hub.model, rec.topic));
   const { events, last, parked: stillParked } = jobProgressNow(rec);
   const now = Date.now();
@@ -16507,7 +16565,7 @@ var init_job2 = __esm({
     init_stop();
     enc = (s) => percentEncode(typeof s === "string" ? s : "");
     realEnvDeps = () => ({ home: (0, import_node_os6.homedir)(), env: process.env });
-    realWaitDeps = () => ({ snapshot: livePaneNonces, now: Date.now });
+    realWaitDeps = () => ({ snapshot: alivePaneNonces, now: Date.now });
   }
 });
 
@@ -16533,7 +16591,7 @@ function paneIdleProbe(d) {
   };
 }
 function holdWaitOpts(pane, probe2) {
-  return { paneAlive: (p) => paneOwned(p, pane.nonce), paneId: pane.paneId, extendMult: 1, onPoll: probe2 };
+  return { paneAlive: (p) => paneLive(p, pane.nonce), paneId: pane.paneId, extendMult: 1, onPoll: probe2 };
 }
 function liveRearm(ctx, d) {
   const wait = d.wait ?? ((i, m, t, off, ev, to) => outboxWaitSince(i, m, t, off, ev, to, holdWaitOpts(d.pane, d.probe), d.clock));
@@ -20951,7 +21009,7 @@ async function experimentSendWith(args, deps) {
   if (deliveredRc !== null) return deliveredRc;
   if (!deps.dryRun) {
     const owner = paneMetaRead(agent, model, topic);
-    if (owner && await (deps.paneOwned ?? paneOwned)(owner.paneId, owner.nonce)) {
+    if (owner && await (deps.paneLive ?? paneLive)(owner.paneId, owner.nonce)) {
       try {
         await deps.paneSend(owner.paneId, taskNudge(inboxPath(agent, model, topic), model));
       } catch (e) {
@@ -21091,7 +21149,7 @@ async function monitorRun(args, opts) {
     readIfExistsOrNull(rescanFile)
   );
   persist(state);
-  const probePane = opts?.paneOwned ?? paneOwned;
+  const probePane = opts?.paneLive ?? paneLive;
   const paneCheckEvery = opts?.paneCheckEveryTicks ?? 15;
   const tickMs = opts?.sleepMs ?? 2e3;
   const maxTicks = opts?.maxTicks ?? Infinity;
@@ -21683,7 +21741,7 @@ async function resumeWith(args, deps) {
       if (phase !== "working") redispatch.add(`${agent}:${expId}`);
     }
   }
-  const live = await deps.livePaneNonces().catch(() => /* @__PURE__ */ new Map());
+  const live = await deps.alivePaneNonces().catch(() => /* @__PURE__ */ new Map());
   const rows = [];
   const monitors = [];
   for (const agent of agents) {
@@ -22106,7 +22164,7 @@ var init_autoresearch2 = __esm({
     };
     liveResumeDeps = {
       now: () => isoUtc(),
-      livePaneNonces: () => livePaneNonces(),
+      alivePaneNonces: () => alivePaneNonces(),
       freshWorker: (t, i) => freshWorkerWith([t, i], liveFreshWorkerDeps)
     };
     liveAbortDeps = {

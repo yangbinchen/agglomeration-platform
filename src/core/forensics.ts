@@ -654,7 +654,7 @@ export function runForensics(command: string, artDirFor: (topic: string) => stri
  *  CLI contract, so keep it before the catch-all — a failure that cannot be filed still prints. */
 export function captureSpawnFailure(opts: {
   agent: string; model: string; topic: string;
-  reason: string; detail: string; failureReportPath?: string; now?: Date;
+  reason: string; detail: string; failureReportPath?: string; paneTail?: string; now?: Date;
 }): string {
   process.stdout.write(`SPAWN_FAILED reason=${opts.reason}\n`);
   try { // NOTE: swallows everything — a topic/path validation must run in the CALLER, outside this catch
@@ -663,6 +663,14 @@ export function captureSpawnFailure(opts: {
       { source: "spawn_failure", key: `reason=${opts.reason} ${opts.detail}`.replace(/\s+/g, " ").trim(), context: ctx },
     ];
     if (opts.failureReportPath) findings.push({ source: "spawn_failure", key: `failure_report=${opts.failureReportPath}`, context: ctx });
+    // The pane's last words — the ONE lead that says why a provider TUI died at bootstrap. Scrubbed
+    // BEFORE encoding: every denylist pattern is written against plain text and would never match a
+    // percent-encoded `token%3D...`. Encoded because a finding is ONE line and `renderFindingBullets`
+    // is line-shaped: a raw tail line that happened to read `- **x** y _(source: z)_` would parse
+    // back out as a phantom finding of its own. Blank lines dropped first, then the last 15 — a TUI
+    // pads its screen with them, and 15 padded lines carry nothing.
+    const tail = scrubSecrets(opts.paneTail ?? "").split("\n").filter((l) => l.trim()).slice(-15).join("\n");
+    if (tail) findings.push({ source: "spawn_failure", key: `pane_tail=${encodeURIComponent(tail)}`, context: ctx });
     const art = workerDir(opts.agent, opts.model, opts.topic);
     return fileFinding("spawn_failure", { command: "spawn", topic: opts.topic, artDir: art },
       `[ap:spawn] ${opts.reason}`, renderFindingBullets(findings)).line;

@@ -356,3 +356,69 @@ the body and each comment in order; `--json` requests only the fields it names, 
 gh release, and the verb stays `gh issue view` (the directive test's `--repo` check covers it). The
 verbs the platform runs itself (`review survey`, `review archive`, the forensics filing) never used
 the failing form and are unchanged.
+
+### Spawn failures carry the pane tail; dead panes keep their screen (0.5.93, issue #195)
+
+Three codex spawns died at bootstrap on two boxes between 2026-09-01 and 09-03. Every filed issue
+said `reason=pane_dead` and named a failure report, and nothing else — the operator could not tell an
+OAuth prompt from an OOM from a bad `--model`. Two gaps, and BOTH had to close: the tail was never
+filed, and for `pane_dead` there was no tail to file.
+
+**P1 — file it.** `captureSpawnFailure` takes `paneTail?`; when it is non-empty a third finding
+`pane_tail=<encoded>` joins `reason=` and `failure_report=`. `bootstrapFailed` passes the capture it
+already took for stderr (25 lines, before the pane is killed) — never a second `capture-pane`, which
+would run after the kill and answer "". The value is scrubbed and THEN encoded: every denylist
+pattern in §D is written against plain text and could not match a percent-encoded `token%3D…`. It is
+percent-encoded because a finding is ONE line and `review.ts`'s `BULLET` regex is line-anchored — a
+raw tail line that happened to read `- **x** y _(source: z)_` would parse back out as a phantom
+finding, and `n_findings_mechanical` would count it. Blank lines are dropped before the last 15 are
+taken (a TUI pads its screen; fifteen blanks carry nothing). An empty or whitespace-only tail pushes
+no bullet at all.
+
+**P2 — make the tail exist.** tmux destroys a pane whose process exited, and `pane_dead` is declared
+only after two failed liveness probes 15s apart, so `capture-pane` at capture time had nothing left
+to read: the one real `pane_dead` report on file has a blank scrollback section. Every ap pane is now
+created with `remain-on-exit on` (`paneRemainOnExitSet`, called inside `stampOrFail` right after both
+ownership stamps take, so all three placement paths get it). It is best-effort: a pane that refuses
+the option only loses its tail, which is today's behaviour, so a `false` warns and the spawn goes on.
+
+Keeping the pane means pane PRESENCE is no longer a liveness answer, so the snapshot now answers two
+questions under two names. The unforgeable id listing carries the dead column
+(`#{pane_id}\t#{pane_dead}`) — never the option listing, whose values a pane can forge with a
+newline. `livePaneNonces` / `paneOwned` stay OWNERSHIP and include dead panes (a dead pane is still
+ap's, so `stop`, `job stop`, `sessionKillable` and the preflight sweep still reap it, and `kill-pane`
+and `respawn-pane -k` both work on one); `alivePaneNonces` / `paneLive` are LIVENESS and drop them.
+Which caller asks which:
+
+| Caller | Question |
+|---|---|
+| `spawn` ready-wait probe, `waitLive`, `implementHold`, `phaseTable` guard leg (d), `send`'s nudge, `autoresearch experiment-send`'s nudge + `monitor`'s escape hatch | **live** — a dead pane must fail the wait fast, and typing into one accomplishes nothing |
+| `classifyJobLiveness` (`job status`, `ap list`), `scanTopicWorkers` / `classifyWorkerLiveness` rule 3, `autoresearch resume`'s liveness pass, `quick init`'s stale-dir reap | **live** — these decide whether a worker is still running — and the OWNED map to kill the dead pane it reaps |
+| `stop`'s batch, `job stop`'s `ownedPanes` + session sweep, `killPreflightOrphans`, `autoresearch drop-worker`, `ap list`'s `[ORPHAN]` column, `spawn`'s `--target-pane` respawn and `.last_pane` split target | **owned** — a dead pane is still ours to reap, respawn, or split from |
+
+`pane_dead` is therefore detected exactly as before (two failed probes, 15s apart), and
+`capture-pane` at that moment returns the real screen.
+
+**Accepted side effect.** A worker TUI that exits on its own now leaves a `[dead]` pane on screen
+until ap reaps it (`ap stop`, `ap job stop`, or the next `respawn-pane -k`). That is the price of the
+tail, and it is visible rather than silent. The graceful-teardown path is unaffected: `killGraceful`
+respawns the pane with the DONE banner and `teardownBatch` kills it 9s later. One reap had to grow a
+kill to keep that promise true: `quick init`'s stale-predecessor archive moves the crashed worker's
+dir, pane.json included, so it kills the dead pane before it archives the dir — otherwise the only
+record that could ever name that pane is gone and dead panes accumulate across crashed quick runs.
+It kills exactly the panes the ownership snapshot still lists under the nonce that dir recorded; a
+recycled id, or one tmux no longer lists, is never touched, and a kill that throws is a warning that
+does not stop the archive. The kill reaches only a pane tmux still lists under the recorded nonce: after a tmux server restart the pane is gone anyway, and the archive proceeds without it.
+
+Which map each dep bag binds is pinned by IDENTITY tests — `READY_WAIT_DEPS.paneAlive` is
+`paneLive`, `realWaitDeps().snapshot` is `alivePaneNonces`, `liveDeps().livePaneNonces` is
+`livePaneNonces` — plus one PATH-shim test that drives the real probes against a tmux answering with
+a dead pane and a live one. Behaviour cannot pin these: the two maps differ on exactly one pane
+shape, dead-but-ours, so a probe rebound to the wrong map passes every fixture built from a live
+snapshot. `ap list` reads both columns from a single `paneSnapshot()` rather than two back-to-back
+scans that can disagree about a pane created or destroyed between them.
+
+**Known and left as is.** The `failure_report=` path filed on the issue is the PRE-archive path: the
+same failure archives the worker dir moments later (`<worker>-<ts>-FAILED/`), so the path on the
+issue no longer resolves. The report itself survives under the archive, and the tail — now on the
+issue — is the primary lead, so the path stays a hint rather than growing an archive-aware rewrite.

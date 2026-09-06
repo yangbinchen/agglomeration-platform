@@ -19,7 +19,7 @@ import { validateSlug } from "../core/slug.js";
 import { envNum } from "../core/env.js";
 import { pickRandomAgent } from "../core/agents.js";
 import { deriveSlug } from "../core/quick.js";
-import { livePaneNonces, ownsPane, pinExport, sessionExists, sessionPaneIds, killSession, validSessionName, currentSessionName } from "../core/tmux.js";
+import { livePaneNonces, alivePaneNonces, ownsPane, pinExport, sessionExists, sessionPaneIds, killSession, validSessionName, currentSessionName } from "../core/tmux.js";
 import { pinReport, provisionDeclared, shadowHits } from "../core/provision.js";
 import { paneMetaRead, paneMetaReadForDir, outboxPath, statusPath, type Clock, type OutboxEvent } from "../core/ipc.js";
 import { liveOutboxWait } from "../core/waitLive.js";
@@ -639,7 +639,9 @@ function providerFallbackLine(rec: J.JobRecord): string | null {
 async function statusRun(rest: string[]): Promise<number> {
   const rec = requireJob(rest[0], "status");
   if (!rec) return 1;
-  const live = await livePaneNonces();
+  // The ALIVE snapshot: `remain-on-exit` keeps a hub pane whose claude exited, and reporting that
+  // as LIVENESS=alive is the ten-hour silence this layer exists to catch.
+  const live = await alivePaneNonces();
   const liveness = J.classifyJobLiveness(live, paneMetaRead(rec.hub.agent, rec.hub.model, rec.topic));
   const { events, last, parked: stillParked } = jobProgressNow(rec);
   const now = Date.now();
@@ -712,8 +714,12 @@ async function statusRun(rest: string[]): Promise<number> {
  *  alive at call time and gone 45s later), and there is no way to script a tmux snapshot and a
  *  clock through the CLI. The default binds the real pane snapshot and the real clock, so `run()`
  *  is unchanged. */
+/** `snapshot` is the ALIVE pane map (dead panes dropped): it feeds worker LIVENESS, never a kill. */
 export interface WaitDeps { snapshot: () => Promise<Map<string, string>>; now: () => number; clock?: Clock }
-const realWaitDeps = (): WaitDeps => ({ snapshot: livePaneNonces, now: Date.now });
+/** Exported so a test can pin the IDENTITY of `snapshot`: bound to `livePaneNonces` (OWNERSHIP) a
+ *  dead worker reads alive forever, because `remain-on-exit` keeps its pane listed — and no
+ *  behavioural test catches that, since both maps agree on every pane that is not dead-but-ours. */
+export const realWaitDeps = (): WaitDeps => ({ snapshot: alivePaneNonces, now: Date.now });
 
 export async function waitRun(rest: string[], deps: WaitDeps = realWaitDeps()): Promise<number> {
   const topic = rest[0];

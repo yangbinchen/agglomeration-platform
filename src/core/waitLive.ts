@@ -2,7 +2,7 @@
 // Kept out of ipc.ts so ipc stays free of the tmux dependency (outboxWaitSince takes the
 // probe as an injected function; this is the one place that binds it to the real tmux probe).
 import { outboxWaitSince, paneMetaRead, type Clock, type OutboxEvent } from "./ipc.js";
-import { paneOwned } from "./tmux.js";
+import { paneLive } from "./tmux.js";
 import { envNum } from "./env.js";
 
 /** Drop-in replacement for the wait verbs' live `outboxWaitSince` call: identical signature, but with
@@ -24,13 +24,14 @@ export function liveOutboxWait(
 ): Promise<OutboxEvent | null> {
   // The probe is ownership-checked, not id-only: a pane id recorded before a tmux server restart
   // can name a stranger's pane, and reading that as "the worker is alive" would extend the wait
-  // instead of failing fast. A pane.json with no nonce disables the check exactly as an ABSENT one
+  // instead of failing fast. It is also DEAD-checked (`paneLive`): every ap pane carries
+  // `remain-on-exit on`, so the pane of a worker that exited stays listed and stays ours. A pane.json with no nonce disables the check exactly as an ABSENT one
   // does (paneId null -> plain outbox-only poll): the probe could only ever answer false for it, and
   // "unverifiable" is not "dead" — enabling it would fabricate a pane-died error ~30s into every
   // wait on a live pre-0.5.30 worker.
   const owner = paneMetaRead(i, m, t);
   return outboxWaitSince(i, m, t, offset, events, timeoutSec, {
-    paneAlive: (p) => paneOwned(p, owner?.nonce ?? ""),
+    paneAlive: (p) => paneLive(p, owner?.nonce ?? ""),
     paneId: owner?.nonce ? owner.paneId : null,
     extendMult: envNum("AP_WAIT_EXTEND_MULT", 3),
     onPoll,

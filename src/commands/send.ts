@@ -3,7 +3,7 @@ import { log } from "../core/log.js";
 import { workerDir, sameStateDir } from "../core/paths.js";
 import { withMainCheckout } from "../core/job.js";
 import { resolveModel, paneMetaRead, inboxWrite, inboxPath } from "../core/ipc.js";
-import { paneOwned, paneSend, paneStateRead } from "../core/tmux.js";
+import { paneLive, paneSend, paneStateRead } from "../core/tmux.js";
 import { validateSlug } from "../core/slug.js";
 
 /** The typed pane prompt that points a worker at its inbox. A claude worker's line carries the
@@ -15,7 +15,7 @@ export function taskNudge(inbox: string, model: string, env: NodeJS.ProcessEnv =
   return `Read ${inbox} and execute the task${ultra ? " with ultracode" : ""}. Reply when done.`;
 }
 
-/** The three tmux touches this verb makes: the ownership probe that decides whether the pane may be
+/** The three tmux touches this verb makes: the liveness probe that decides whether the pane may be
  *  typed into, the @ap_state read that decides whether the tree it is about to write is the tree the
  *  worker reads, and the typing itself. Injected only by tests — nothing may reach a real pane in a
  *  unit test, least of all the verb whose bug was typing into a stranger's shell. `paneState` is
@@ -23,11 +23,11 @@ export function taskNudge(inbox: string, model: string, env: NodeJS.ProcessEnv =
  *  un-injected reader answers "" (unverified), the same proceed-anyway value an unstamped pane
  *  gives. The shipped path always injects the live reader. */
 export interface SendCmdDeps {
-  paneOwned(pane: string, nonce: string): Promise<boolean>;
+  paneLive(pane: string, nonce: string): Promise<boolean>;
   paneSend(pane: string, line: string): Promise<void>;
   paneState?(pane: string): Promise<string>;
 }
-const liveSendCmdDeps: SendCmdDeps = { paneOwned, paneSend, paneState: paneStateRead };
+const liveSendCmdDeps: SendCmdDeps = { paneLive, paneSend, paneState: paneStateRead };
 
 export async function run(args: string[], deps: SendCmdDeps = liveSendCmdDeps): Promise<number> {
   // ONE state tree per run, whatever directory the hub is standing in. Every state path derives from
@@ -66,9 +66,10 @@ async function dispatchVerb(args: string[], deps: SendCmdDeps): Promise<number> 
   const owner = paneMetaRead(agent, model, topic);
   if (!owner) { log.error(`pane.json missing for ${agent}-${model} on ${topic}`); return 1; }
   const pane = owner.paneId;
-  // Ownership, not liveness: a recorded id that outlived its pane can name a stranger's pane after a
-  // tmux restart, and this verb TYPES INTO the pane it accepts (the nudge is executed there).
-  if (!(await deps.paneOwned(pane, owner.nonce))) { log.error(`${agent}'s pane ${pane} is gone or is no longer ours (orphan); run ap stop ${agent} ${topic}`); return 1; }
+  // Ownership AND liveness: a recorded id that outlived its pane can name a stranger's pane after a
+  // tmux restart, and this verb TYPES INTO the pane it accepts (the nudge is executed there) — which
+  // a pane kept by `remain-on-exit` after its worker exited would accept and no one would read.
+  if (!(await deps.paneLive(pane, owner.nonce))) { log.error(`${agent}'s pane ${pane} is gone or is no longer ours (orphan); run ap stop ${agent} ${topic}`); return 1; }
 
   // The hub's own proof that it resolved the tree this worker was actually given. inboxWrite and the
   // nudge derive from the SAME cwd, so they stay consistent with each other while both miss the

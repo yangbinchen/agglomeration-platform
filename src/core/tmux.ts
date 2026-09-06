@@ -89,6 +89,15 @@ export function sessionPanesArgs(session: string): string[] {
 export function setOptionArgs(pane: string, opt: string, val: string): string[] {
   return ["set-option", "-p", "-t", pane, opt, val];
 }
+/** Keep the pane on the server after its process exits, screen intact, instead of letting tmux
+ *  destroy it. Without this a worker TUI that died at bootstrap took its scrollback with it: death
+ *  is only declared after two failed probes 15s apart, and `capture-pane` on a pane that is already
+ *  gone returns "" — which is why the one real `pane_dead` failure report on file has a blank
+ *  scrollback section. `kill-pane` and `respawn-pane -k` both still work on a dead pane, so teardown
+ *  and the preflight respawn are unaffected. */
+export function paneRemainOnExitArgs(pane: string): string[] {
+  return setOptionArgs(pane, "remain-on-exit", "on");
+}
 /** Stamp a pane with its ownership nonce. A raw pane id (%N) is NOT proof of ownership — tmux
  *  restarts the %N counter from 0 on a fresh server, so a recorded id that outlived its pane can
  *  name a stranger's pane. @ap_nonce is the per-pane secret ap mints when it CREATES the pane and
@@ -139,6 +148,39 @@ export function parsePaneNonces(stdout: string, realIds?: Set<string>): Map<stri
   for (const id of dup) m.set(id, "");
   return m;
 }
+/** tmux's OWN answer per pane: the id it assigned, and whether the pane's process has EXITED. Every
+ *  ap pane is created with `remain-on-exit on`, so a worker that died keeps its pane — and its
+ *  screen — until ap reaps it, and pane presence alone stopped being a liveness answer. Neither
+ *  field can be forged by a pane option (tmux assigns `%N` and owns `pane_dead`), which is why the
+ *  dead column is read from THIS listing and never from the option listing. A tmux that dropped the
+ *  second field reads as not-dead: the pre-`remain-on-exit` behaviour, never a fabricated death. */
+function parsePaneDead(stdout: string): Map<string, boolean> {
+  const m = new Map<string, boolean>();
+  for (const line of stdout.split("\n")) {
+    if (!line) continue;
+    const tab = line.indexOf("\t");
+    const id = tab < 0 ? line : line.slice(0, tab);
+    if (!PANE_ID_RE.test(id)) continue;
+    m.set(id, tab >= 0 && line.slice(tab + 1) === "1");
+  }
+  return m;
+}
+
+/** The two questions one pane snapshot answers, kept apart because they have different answers for
+ *  a dead pane: `nonces` is OWNERSHIP (every pane tmux lists, dead included — a dead pane is still
+ *  ours, so `stop`, `job stop` and the preflight sweep must still reap it), `alive` is LIVENESS (the
+ *  same map minus the dead panes — a worker whose process exited is gone, however long its screen
+ *  stays up). */
+export interface PaneSnapshot { nonces: Map<string, string>; alive: Map<string, string>; }
+
+/** Both answers, from the two listings tmux was asked for. Pure, so the owned/live split is testable
+ *  without a server. */
+export function parsePaneSnapshot(idsOut: string, pairsOut: string): PaneSnapshot {
+  const dead = parsePaneDead(idsOut);
+  const nonces = parsePaneNonces(pairsOut, new Set(dead.keys()));
+  return { nonces, alive: new Map([...nonces].filter(([id]) => !dead.get(id))) };
+}
+
 /** The one ownership predicate: the pane is live AND carries exactly the nonce we recorded for it.
  *  A recorded nonce that is not a platform-minted UUID — empty (a pane.json written by a pre-nonce
  *  ap, or a legacy preflight row) or any other value — never matches: "we cannot prove it is ours"
@@ -269,36 +311,55 @@ export async function ensureWindowBorderStatus(target: string): Promise<boolean>
   try { await tmux(windowBorderStatusArgs(target)); return true; } catch { return false; }
 }
 
-/** One snapshot of every live pane id on the server AND its ownership nonce (single tmux call).
- *  Use this when checking many panes at once (e.g. `ap list`, a teardown batch) instead of probing
- *  per pane — N panes would otherwise re-run the identical full-server scan N times. This replaced
- *  the id-only `livePanes`/`paneAlive` pair outright: an id-only liveness answer is exactly the
- *  evidence that let a stale id name a stranger's pane, so the primitive no longer exists. */
-export async function livePaneNonces(): Promise<Map<string, string>> {
-  // Two listings, issued together: the pairs, plus tmux's own id list. Only the second is
-  // unforgeable (a pane option can carry a newline; a pane_id cannot), so it is what decides WHICH
-  // panes exist — see parsePaneNonces. A pane appearing/vanishing between the two only ever drops a
-  // row, which reads as "not ours", the fail-closed direction.
-  //
-  // NEVER throws (matching ensurePaneBorders/ensureWindowBorderStatus above): no tmux server
-  // running, tmux not installed, and a server with no panes are indistinguishable here and all mean
-  // the same thing — ap cannot prove it owns anything. The empty map answers every ownership
-  // question with "not ours", so nothing is killed, nudged, or called alive. Callers reach this from
-  // paths that must survive a tmux-less machine (a headless box, a container, CI).
+/** BOTH answers about every pane on the server, from ONE pair of listings. Use this when checking
+ *  many panes at once (e.g. `ap list`, a teardown batch) instead of probing per pane — N panes would
+ *  otherwise re-run the identical full-server scan N times — and use it in place of
+ *  `livePaneNonces()` followed by `alivePaneNonces()` whenever a caller needs both columns: two
+ *  back-to-back snapshots can disagree about a pane created or destroyed between them.
+ *
+ *  Two listings, issued together: the pairs, plus tmux's own id+dead list. Only the second is
+ *  unforgeable (a pane option can carry a newline; a pane_id and pane_dead cannot), so it is what
+ *  decides WHICH panes exist and which are dead — see parsePaneNonces/parsePaneDead. A pane
+ *  appearing/vanishing between the two only ever drops a row, which reads as "not ours", the
+ *  fail-closed direction.
+ *
+ *  NEVER throws (matching ensurePaneBorders/ensureWindowBorderStatus above): no tmux server
+ *  running, tmux not installed, and a server with no panes are indistinguishable here and all mean
+ *  the same thing — ap cannot prove it owns anything. The empty maps answer every ownership
+ *  question with "not ours", so nothing is killed, nudged, or called alive. Callers reach this from
+ *  paths that must survive a tmux-less machine (a headless box, a container, CI). */
+export async function paneSnapshot(): Promise<PaneSnapshot> {
   return livePaneOption("@ap_nonce");
+}
+
+/** The OWNERSHIP half of `paneSnapshot`. DEAD PANES ARE IN HERE, on purpose: a pane whose worker
+ *  exited is still ap's to reap. A caller asking whether the WORKER is alive wants alivePaneNonces.
+ *  This replaced the id-only `livePanes`/`paneAlive` pair outright: an id-only liveness answer is
+ *  exactly the evidence that let a stale id name a stranger's pane, so the primitive no longer
+ *  exists. Never throws — see paneSnapshot. */
+export async function livePaneNonces(): Promise<Map<string, string>> {
+  return (await paneSnapshot()).nonces;
+}
+
+/** `livePaneNonces` minus the panes tmux reports dead: the LIVENESS snapshot. Every ap pane carries
+ *  `remain-on-exit on`, so a dead worker's pane stays listed — screen intact — until teardown, and a
+ *  probe that only asked "is the pane there, carrying our nonce?" would call that worker alive
+ *  forever. Same never-throws contract: an empty map means nothing can be proven alive. */
+export async function alivePaneNonces(): Promise<Map<string, string>> {
+  return (await paneSnapshot()).alive;
 }
 
 /** The snapshot both pane options are read through. Kept as ONE body so @ap_state inherits every
  *  hardening @ap_nonce has (the unforgeable id list, the phantom/duplicate rules) rather than
  *  growing a second, weaker copy. */
-async function livePaneOption(opt: string): Promise<Map<string, string>> {
+async function livePaneOption(opt: string): Promise<PaneSnapshot> {
   try {
     const [ids, pairs] = await Promise.all([
-      run(["list-panes", "-a", "-F", "#{pane_id}"]),
+      run(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_dead}"]),
       run(["list-panes", "-a", "-F", `#{pane_id}\t#{${opt}}`]),
     ]);
-    return parsePaneNonces(pairs, new Set(ids.split("\n").filter(Boolean)));
-  } catch { return new Map(); }
+    return parsePaneSnapshot(ids, pairs);
+  } catch { return { nonces: new Map(), alive: new Map() }; }
 }
 
 /** The state dir stamped on `pane`, or "" when there is none to compare: an unstamped pane (a worker
@@ -306,7 +367,7 @@ async function livePaneOption(opt: string): Promise<Map<string, string>> {
  *  never "mismatched" -- the caller must proceed on it, exactly as classifyTestRun refuses to read a
  *  check that could not run as a failure. Never throws. */
 export async function paneStateRead(pane: string): Promise<string> {
-  return (await livePaneOption("@ap_state")).get(pane) ?? "";
+  return (await livePaneOption("@ap_state")).nonces.get(pane) ?? "";
 }
 
 /** Is `pane` live and ours (its live @ap_nonce is the one we recorded)? The single-pane form of
@@ -315,6 +376,17 @@ export async function paneStateRead(pane: string): Promise<string> {
 export async function paneOwned(pane: string, nonce: string): Promise<boolean> {
   if (!NONCE_RE.test(nonce)) return false;   // unverifiable: no tmux call can settle it
   return ownsPane(await livePaneNonces(), pane, nonce);
+}
+
+/** Is `pane` ours AND still running a process? The question every liveness probe asks — the bootstrap
+ *  ready-wait, the turn waits, the premature-done hold, the phase guard's fourth evidence leg, the
+ *  autoresearch monitor, and any nudge (typing into a dead pane accomplishes nothing). Strictly
+ *  stronger than `paneOwned`, so it keeps the reused-id protection that predicate exists for; the
+ *  kill and sweep paths deliberately stay on `paneOwned`, because a dead pane is still ap's to reap.
+ *  Never throws, for the same reason `paneOwned` does not. */
+export async function paneLive(pane: string, nonce: string): Promise<boolean> {
+  if (!NONCE_RE.test(nonce)) return false;   // unverifiable: no tmux call can settle it
+  return ownsPane(await alivePaneNonces(), pane, nonce);
 }
 
 export interface PreflightOrphanDeps {
@@ -354,6 +426,14 @@ export async function paneNonceSet(pane: string, nonce: string): Promise<boolean
  *  so the CALLER must fail closed rather than leave the pane half-stamped. */
 export async function paneStateSet(pane: string, dir: string): Promise<boolean> {
   try { await run(paneStateSetArgs(pane, dir)); return true; } catch { return false; }
+}
+
+/** Set `remain-on-exit on` so the pane survives its worker; false on any tmux error (never throws).
+ *  NOT load-bearing, unlike the two stamps above: a pane that refused it is a pane that will take
+ *  its scrollback with it when it dies, which is exactly today's behaviour — never a reason to fail
+ *  a spawn that is otherwise healthy. */
+export async function paneRemainOnExitSet(pane: string): Promise<boolean> {
+  try { await run(paneRemainOnExitArgs(pane)); return true; } catch { return false; }
 }
 
 export async function paneSend(pane: string, line: string): Promise<void> {
