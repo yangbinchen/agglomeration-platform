@@ -197,12 +197,19 @@ describe("mergePaneEvidence — a re-run can still finish an interrupted sweep",
 
 describe("jobProgress", () => {
   const ev = (event: string, extra: Record<string, unknown> = {}): OutboxEvent => ({ event, ...extra });
-  it("a question is parked only while it is the newest event", () => {
+  it("a question is parked while only progress follows it (#242)", () => {
     expect(J.jobProgress([ev("ack"), ev("question", { message: "which?" })]).parked?.message).toBe("which?");
+    expect(J.jobProgress([ev("ack"), ev("question", { message: "which?" }), ev("progress"), ev("progress")]).parked?.message).toBe("which?");
+    const two = J.jobProgress([ev("question"), ev("progress"), ev("question", { message: "second" })]);
+    expect(two.parked?.message).toBe("second");
+    expect(two.last?.event).toBe("question");
   });
-  it("anything after the question means it was answered and the run moved on", () => {
+  it("an ack or a terminal event after the question means it was answered and the run moved on", () => {
     expect(J.jobProgress([ev("question"), ev("ack")]).parked).toBeNull();
     expect(J.jobProgress([ev("question"), ev("done")]).parked).toBeNull();
+    expect(J.jobProgress([ev("question"), ev("progress"), ev("ack")]).parked).toBeNull();
+    expect(J.jobProgress([ev("question"), ev("error")]).parked).toBeNull();
+    expect(J.jobProgress([ev("question"), ev("ready")]).parked).toBeNull();
   });
   it("an empty outbox has no last event and nothing parked", () => {
     expect(J.jobProgress([])).toEqual({ last: null, parked: null });
@@ -233,10 +240,49 @@ describe("relaySnapshot — one read decides both the verdict and the offset it 
     expect(J.relaySnapshot(text).parked?.event).toBe("question");
     expect(J.relaySnapshot(text).cursor).toBe(Buffer.byteLength(text, "utf8"));
   });
+  it("progress logged while parked keeps the question parked, and the cursor covers that progress", () => {
+    const text = line({ event: "question", message: "which provider?" }) + line({ event: "progress", note: "operator question still open" });
+    expect(J.relaySnapshot(text).parked?.message).toBe("which provider?");
+    expect(J.relaySnapshot(text).cursor).toBe(Buffer.byteLength(text, "utf8"));
+  });
+});
+
+describe("newestQuestionEnd — the offset a relay must have covered for the question to count as answered", () => {
+  const line = (o: Record<string, unknown>) => JSON.stringify(o) + "\n";
+  it("one question line ends at the end of that line, its newline included", () => {
+    const text = line({ event: "question", message: "which?" });
+    expect(J.newestQuestionEnd(text)).toBe(Buffer.byteLength(text, "utf8"));
+  });
+  it("progress logged after the question does NOT move the offset", () => {
+    const q = line({ event: "progress" }) + line({ event: "question", message: "which?" });
+    const text = q + line({ event: "progress", note: "operator question still open" });
+    expect(J.newestQuestionEnd(text)).toBe(Buffer.byteLength(q, "utf8"));
+  });
+  it("a question without a trailing newline ends at the end of the text, never past it", () => {
+    const text = JSON.stringify({ event: "question", message: "which?" });
+    expect(J.newestQuestionEnd(text)).toBe(Buffer.byteLength(text, "utf8"));
+  });
+  it("no question is offset zero", () => {
+    expect(J.newestQuestionEnd(line({ event: "progress" }) + line({ event: "ack" }))).toBe(0);
+    expect(J.newestQuestionEnd("")).toBe(0);
+  });
+  it("two questions end at the SECOND one", () => {
+    const upto = line({ event: "question", message: "first" }) + line({ event: "progress" }) + line({ event: "question", message: "second" });
+    expect(J.newestQuestionEnd(upto + line({ event: "progress" }))).toBe(Buffer.byteLength(upto, "utf8"));
+  });
+  it("the offset is a BYTE count, multibyte text included", () => {
+    const text = line({ event: "question", message: "café — ok?" });
+    expect(J.newestQuestionEnd(text)).toBe(Buffer.byteLength(text, "utf8"));
+    expect(J.newestQuestionEnd(text)).toBeGreaterThan(text.length);   // not the character count
+  });
+  it("non-JSON noise before the question counts toward the offset", () => {
+    const text = "starting up\n" + line({ event: "question" });
+    expect(J.newestQuestionEnd(text)).toBe(Buffer.byteLength(text, "utf8"));
+  });
 });
 
 describe("questionConsumed — closes the duplicate-relay loop", () => {
-  it("a cursor at or past the outbox's size means the newest question was already answered", () => {
+  it("a cursor at or past the question's end offset means it was answered", () => {
     expect(J.questionConsumed(196, 196)).toBe(true);
     expect(J.questionConsumed(196, 300)).toBe(true);   // the hub shrank/rotated its outbox
   });

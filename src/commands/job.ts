@@ -141,9 +141,10 @@ function jobProgressNow(rec: J.JobRecord) {
   const { last, parked } = J.jobProgress(events);
   // A question the origin already answered must stop reporting as parked: job.md tells it to relay
   // whenever PARKED=yes, so a question left standing after its answer is a duplicate-relay loop that
-  // writes the hub's inbox again. The relay's cursor is the byte size of the snapshot it answered,
-  // so a cursor at or past the outbox's current size means this question is inside what it consumed.
-  const stillParked = parked && !J.questionConsumed(Buffer.byteLength(outbox, "utf8"), readCursor(rec.topic)) ? parked : null;
+  // writes the hub's inbox again. The relay's cursor is the byte size of the snapshot it answered, so
+  // a cursor at or past the newest question's own end offset means this question is inside what it
+  // consumed — and a heartbeat the hub logs after the relay, before its ack, does not re-park it.
+  const stillParked = parked && !J.questionConsumed(J.newestQuestionEnd(outbox), readCursor(rec.topic)) ? parked : null;
   return { events, last, parked: stillParked };
 }
 
@@ -757,7 +758,7 @@ export async function waitRun(rest: string[], deps: WaitDeps = realWaitDeps()): 
   return 0;
 }
 
-async function relayRun(rest: string[]): Promise<number> {
+export async function relayRun(rest: string[], send: (argv: string[]) => Promise<number> = sendRun): Promise<number> {
   const rec = requireJob(rest[0], "relay");
   if (!rec) return 1;
   const msg = rest.slice(1).join(" ").trim();
@@ -772,11 +773,15 @@ async function relayRun(rest: string[]): Promise<number> {
     log.error(`job relay: nothing is parked (last event: ${last ? last.event : "none"}) — refusing to write the job hub's inbox; a write now would clobber its running or finished task`);
     return 1;
   }
-  const rc = await sendRun(["--from", "hub", rec.hub.agent, rec.topic, msg]);
+  // The job hub's `done` is the run's TERMINAL event — the origin acts on it and `job stop` kills the
+  // session — so the generic done-event footer must not ride a relayed answer: an answer that reads as
+  // "when done, append a done event" invites the hub to end the run on the next thing it finishes.
+  const rc = await send(["--from", "hub", "--no-done-instruction", rec.hub.agent, rec.topic, msg]);
   if (rc !== 0) return rc;
-  // The SNAPSHOT's offset, never a re-stat after the send: the snapshot ends at the question, so an
-  // event the hub appended while the send was in flight stays beyond the cursor and the next
-  // `job wait` still sees it. Re-stating here lost a `done` that landed mid-send.
+  // The SNAPSHOT's offset, never a re-stat after the send: the snapshot ends at the question, or at
+  // the progress the hub logged while parked, so an event the hub appended while the send was in
+  // flight stays beyond the cursor and the next `job wait` still sees it. Re-stating here lost a
+  // `done` that landed mid-send.
   atomicWrite(J.jobCursorPath(rec.topic), String(cursor) + "\n");
   log.ok(`job relay: answer delivered to ${rec.hub.agent} on ${rec.topic}`);
   return 0;

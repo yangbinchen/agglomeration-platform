@@ -9843,17 +9843,34 @@ function mergePaneEvidence(prior, current) {
 }
 function jobProgress(events) {
   const last = events.length ? events[events.length - 1] : null;
-  return { last, parked: last && last.event === "question" ? last : null };
+  let parked = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].event === "question") {
+      parked = events[i];
+      break;
+    }
+    if (events[i].event !== "progress") break;
+  }
+  return { last, parked };
 }
 function parseOutbox(text) {
   return text.split("\n").map(parseEvent).filter((e) => e !== null);
+}
+function newestQuestionEnd(text) {
+  const lines = text.split("\n");
+  let off = 0, end = 0;
+  for (let i = 0; i < lines.length; i++) {
+    off += Buffer.byteLength(lines[i], "utf8") + (i < lines.length - 1 ? 1 : 0);
+    if (parseEvent(lines[i])?.event === "question") end = off;
+  }
+  return end;
 }
 function relaySnapshot(text) {
   const { last, parked } = jobProgress(parseOutbox(text));
   return { last, parked, cursor: Buffer.byteLength(text, "utf8") };
 }
-function questionConsumed(size, cursor) {
-  return cursor >= size;
+function questionConsumed(end, cursor) {
+  return cursor >= end;
 }
 function stripFlags(text, valueFlags) {
   const toks = text.split(/\s+/).filter(Boolean);
@@ -15752,6 +15769,7 @@ __export(job_exports, {
   driftFor: () => driftFor,
   finishHint: () => finishHint,
   provisionWorktree: () => provisionWorktree,
+  relayRun: () => relayRun,
   run: () => run11,
   startRun: () => startRun,
   startWorktree: () => startWorktree,
@@ -15843,7 +15861,7 @@ function jobProgressNow(rec) {
   const outbox = readIfExists(outboxPath(rec.hub.agent, rec.hub.model, rec.topic));
   const events = parseOutbox(outbox);
   const { last, parked } = jobProgress(events);
-  const stillParked = parked && !questionConsumed(Buffer.byteLength(outbox, "utf8"), readCursor(rec.topic)) ? parked : null;
+  const stillParked = parked && !questionConsumed(newestQuestionEnd(outbox), readCursor(rec.topic)) ? parked : null;
   return { events, last, parked: stillParked };
 }
 function reportShadows(root, worktree, deps) {
@@ -16288,7 +16306,7 @@ async function waitRun(rest, deps = realWaitDeps()) {
 `);
   return 0;
 }
-async function relayRun(rest) {
+async function relayRun(rest, send = run2) {
   const rec = requireJob(rest[0], "relay");
   if (!rec) return 1;
   const msg = rest.slice(1).join(" ").trim();
@@ -16301,7 +16319,7 @@ async function relayRun(rest) {
     log.error(`job relay: nothing is parked (last event: ${last ? last.event : "none"}) \u2014 refusing to write the job hub's inbox; a write now would clobber its running or finished task`);
     return 1;
   }
-  const rc = await run2(["--from", "hub", rec.hub.agent, rec.topic, msg]);
+  const rc = await send(["--from", "hub", "--no-done-instruction", rec.hub.agent, rec.topic, msg]);
   if (rc !== 0) return rc;
   atomicWrite(jobCursorPath(rec.topic), String(cursor) + "\n");
   log.ok(`job relay: answer delivered to ${rec.hub.agent} on ${rec.topic}`);

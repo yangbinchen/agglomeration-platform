@@ -448,12 +448,19 @@ export function mergePaneEvidence(prior: Record<string, string>, current: Map<st
 
 export interface JobProgress { last: OutboxEvent | null; parked: OutboxEvent | null; }
 
-/** A question is PARKED only while it is the newest event. Anything the hub emitted afterwards —
- *  an ack of the relayed answer, more progress, a terminal event — means the question was answered
- *  and the run moved on, so reporting it as still-parked would send the operator to answer it twice. */
+/** A question is PARKED while the hub has emitted nothing but `progress` since it. A parked hub may keep
+ *  logging progress ("operator question still open") — that is a heartbeat, not an answer. An `ack` (the hub
+ *  picked up the relayed answer), a terminal event, or any other event after the question means the run moved
+ *  on, and reporting it as still-parked would send the operator to answer it twice. (#242: a heartbeat after
+ *  the question un-parked the record, `job relay` refused, and the origin wrote the inbox and the cursor by hand.) */
 export function jobProgress(events: OutboxEvent[]): JobProgress {
   const last = events.length ? events[events.length - 1] : null;
-  return { last, parked: last && last.event === "question" ? last : null };
+  let parked: OutboxEvent | null = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].event === "question") { parked = events[i]; break; }
+    if (events[i].event !== "progress") break;
+  }
+  return { last, parked };
 }
 
 /** Every typed event in an outbox SNAPSHOT (non-JSON lines skipped, the frozen matching mechanism).
@@ -462,26 +469,41 @@ export function parseOutbox(text: string): OutboxEvent[] {
   return text.split("\n").map(parseEvent).filter((e): e is OutboxEvent => e !== null);
 }
 
+/** The byte offset just past the newest `question` line of an outbox text (its newline included when present);
+ *  0 when there is none. This is the offset a relay must have covered for that question to count as answered.
+ *  The outbox's SIZE would not do: progress the hub logs after the relay and before its ack grows the outbox
+ *  past the cursor and would re-park an answered question. */
+export function newestQuestionEnd(text: string): number {
+  const lines = text.split("\n");
+  let off = 0, end = 0;
+  for (let i = 0; i < lines.length; i++) {
+    off += Buffer.byteLength(lines[i], "utf8") + (i < lines.length - 1 ? 1 : 0);
+    if (parseEvent(lines[i])?.event === "question") end = off;
+  }
+  return end;
+}
+
 /** What a relay decides, from ONE read of the hub's outbox: what is parked right now, and the byte
  *  offset that verdict was computed at.
  *
  *  `cursor` is the size of the SNAPSHOT, never a re-stat after the send. The snapshot ends at the
- *  question, so anything the hub appends afterwards — including a terminal event racing the beat
- *  inside a send — stays BEYOND the cursor and the next `job wait` still reports it; a cursor taken
- *  after the send swallowed a `done` that landed mid-send and the wait timed out on a finished job.
- *  The same single read makes a stale or duplicate relay fail its `parked` check: by then the hub's
- *  ack (or its terminal event) is the newest event, so `parked` is null. */
+ *  question — or at the progress the hub logged while parked — so anything the hub appends afterwards
+ *  — including a terminal event racing the beat inside a send — stays BEYOND the cursor and the next
+ *  `job wait` still reports it; a cursor taken after the send swallowed a `done` that landed mid-send
+ *  and the wait timed out on a finished job. The same single read makes a stale or duplicate relay
+ *  fail its `parked` check: by then the hub's ack (or its terminal event) follows the question, so
+ *  `parked` is null. */
 export function relaySnapshot(text: string): { last: OutboxEvent | null; parked: OutboxEvent | null; cursor: number } {
   const { last, parked } = jobProgress(parseOutbox(text));
   return { last, parked, cursor: Buffer.byteLength(text, "utf8") };
 }
 
-/** Was the newest question already answered? `cursor` is what a relay recorded (the size of the
- *  snapshot it answered), `size` the outbox's size now. At or past it means the question sits inside
- *  what a relay already consumed, so `job status` must stop reporting PARKED=yes: commands/job.md
- *  tells the origin hub to relay whenever it sees PARKED=yes, and a question that stays parked after
- *  its answer is a directive-level duplicate-relay loop. */
-export function questionConsumed(size: number, cursor: number): boolean { return cursor >= size; }
+/** Was the newest question already answered? `cursor` is what a relay recorded (the byte size of the
+ *  snapshot it answered), `end` is `newestQuestionEnd` of the outbox now. A cursor at or past it means
+ *  the question sits inside what a relay already consumed, so `job status` must stop reporting
+ *  PARKED=yes: commands/job.md tells the origin hub to relay whenever it sees PARKED=yes, and a
+ *  question that stays parked after its answer is a directive-level duplicate-relay loop. */
+export function questionConsumed(end: number, cursor: number): boolean { return cursor >= end; }
 
 // ---------- launch-time gates ----------
 

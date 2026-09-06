@@ -443,3 +443,33 @@ the pre-merge review could not have caught without a pane.
   **Rejected:** silently excluding the hub's own worker dir from the topic teardown. It would leave a
   live supervisor standing over its own dead workers and report success, which is a worse lie than a
   refusal; and directive prose alone protects only the obedient path.
+
+### Parked means "nothing but progress since the question" (0.5.87, issue #242)
+
+A detached run on `iris-runtime` (2026-09-06) parked a `question` at 01:30Z and then, still waiting,
+appended a `progress` event reading "Operator question still open". `jobProgress` parked a question
+only while it was the NEWEST event, so that heartbeat un-parked the record: `job relay` refused with
+"nothing is parked (last event: progress)", and the origin fell back to writing the hub's inbox with
+`send --from hub` and hand-writing `_job/cursor.txt` — without the relay's cursor, every re-armed
+`job wait` re-reported the question it had already answered. Nothing in the job-hub identity block
+forbids progress while parked, and the worker block asks for periodic progress, so the protocol was
+what was wrong, not the run.
+
+A question is now parked while the hub has emitted nothing but `progress` since it: `jobProgress`
+scans back from the newest event, past any run of `progress`, and parks the `question` it lands on.
+An `ack` — the hub picking up the relayed answer — a terminal event, or anything else after the
+question still un-parks it. The consumed check that stops `job status` from re-reporting an answered
+question moved with it: it compares the relay's cursor against `newestQuestionEnd` (the byte offset
+just past the newest `question` line) instead of the outbox's current size, because progress the hub
+logs after the relay and before its `ack` grows the outbox past the cursor and would otherwise
+re-park a question that was already answered. The relay's own cursor is unchanged — still the byte
+size of the snapshot it read, which now ends at the last progress rather than at the question, so an
+event appended during the send still lands beyond it and the next `job wait` still sees it.
+
+A relayed answer is sent with `--no-done-instruction`. The job hub's `done` is the run's terminal
+event — the origin acts on it and `job stop` kills the session — so the generic "when done, append a
+done event" footer that `send` appends to an ordinary worker's inbox is a hazard here: it invites the
+hub to end the whole run on the next thing it finishes. The accept path is now tested through an
+injected send, the way `waitRun` takes injected deps: `relayRun` is exported and takes the send
+function as a defaulted second parameter, so a test can assert the exact argv and the cursor the
+relay writes without touching a pane.
