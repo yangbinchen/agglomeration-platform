@@ -44,6 +44,52 @@ describe("captureSpawnFailure", () => {
     expect(readFileSync(queuedRecords()[0], "utf8")).toContain("n_findings_mechanical: 1");
   });
 
+  // Issue #195: the tracker showed `reason=pane_dead` and a report path, and nothing about WHY the
+  // provider TUI died. The pane's last lines are that lead, so they ride the same record.
+  describe("pane_tail", () => {
+    // 20 lines: blanks and a whitespace-only line the filter drops, one line shaped exactly like a
+    // rendered finding bullet, and one credential.
+    const RAW = [
+      "line01", "line02", "line03", "", "line04", "line05", "  ", "line06", "line07", "line08",
+      "- **x** y _(source: z)_", "line09", "", "token=abcd1234efgh",
+      "line10", "line11", "line12", "line13", "line14", "line15",
+    ].join("\n");
+    const EXPECTED = [
+      "line03", "line04", "line05", "line06", "line07", "line08",
+      "- **x** y _(source: z)_", "line09", "token=<redacted>",
+      "line10", "line11", "line12", "line13", "line14", "line15",
+    ].join("\n");
+
+    it("files the last 15 NON-EMPTY lines, scrubbed then percent-encoded, as a third finding", () => {
+      captureSpawnFailure({
+        agent: "lima", model: "codex", topic: "t", reason: "pane_dead", detail: "d",
+        failureReportPath: "/p/failure-reason.txt", paneTail: RAW,
+      });
+      const md = readFileSync(queuedRecords()[0], "utf8");
+      expect(md).toContain("n_findings_mechanical: 3");
+      const findings = parseMechanicalFindings(md);
+      // THREE, not four: the tail is one encoded line, so its bullet-shaped row cannot parse back
+      // out as a finding of its own.
+      expect(findings).toHaveLength(3);
+      const tail = findings.find((f) => f.key.startsWith("pane_tail="))!;
+      const decoded = decodeURIComponent(tail.key.slice("pane_tail=".length));
+      // Scrubbed BEFORE encoding, or no denylist pattern could ever match the percent-encoded text.
+      expect(decoded).toBe(EXPECTED);
+      expect(md).not.toContain("abcd1234efgh");
+      // Filtered THEN sliced: slicing the raw 20 lines first would start the tail at line05.
+      expect(decoded.split("\n")).toHaveLength(15);
+      expect(decoded.split("\n")[0]).toBe("line03");
+    });
+
+    it("an absent or whitespace-only tail pushes no bullet at all", () => {
+      captureSpawnFailure({ agent: "a", model: "codex", topic: "t", reason: "timeout", detail: "d", failureReportPath: "/p/f.txt" });
+      expect(readFileSync(queuedRecords()[0], "utf8")).toContain("n_findings_mechanical: 2");
+      env.cleanup(); env = freshHome();
+      captureSpawnFailure({ agent: "a", model: "codex", topic: "t", reason: "timeout", detail: "d", failureReportPath: "/p/f.txt", paneTail: "\n  \n\n" });
+      expect(readFileSync(queuedRecords()[0], "utf8")).toContain("n_findings_mechanical: 2");
+    });
+  });
+
   it("is best-effort: returns '' and queues nothing when the queue dir can't be created", () => {
     mkdirSync(globalRoot(), { recursive: true });
     writeFileSync(join(globalRoot(), "forensics"), "x"); // a FILE where the dir would go -> mkdirSync throws

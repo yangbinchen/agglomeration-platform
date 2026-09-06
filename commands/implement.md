@@ -285,7 +285,9 @@ wait verbs are the only waits. A spawn killed anyway exits **143** — treat it 
 (it has already FAILED-archived the worker).
 
 On spawn failure (non-zero) — **spawn-retry-once**. The failure prints one machine-readable stdout
-line, `SPAWN_FAILED reason=<reason>`; branch on it, never on stderr. `pane_dead` and `timeout` are
+line, `SPAWN_FAILED reason=<reason>`; branch on it, never on stderr. The same failure is filed on
+the ap tracker, and the filed issue now carries the pane's last lines (`pane_tail=`,
+percent-encoded) — that is where you read WHY the TUI died. `pane_dead` and `timeout` are
 the cold-start reasons — a provider TUI that died or never reported inside its ready window,
 transient and recurring — so on the **FIRST** of those re-run the SAME `$CS spawn ...` command
 **once**, with the same `timeout: 300000`. Nothing to clean up first: the failed spawn already

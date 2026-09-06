@@ -17,7 +17,7 @@ import { pickRandomAgent } from "../core/agents.js";
 import { runnerAt, preSnapshot, createOrResumeBranch, finishWork, classifyDirty, currentBranch, hasDistinctBranch, stashPush, stashEntry, stashList, stashPopOnBranch, targetProblem } from "../core/gitwork.js";
 import type { Runner } from "../core/gitwork.js";
 import { outboxOffset, outboxPath, paneMetaReadForDir, workerBusyStateForDir } from "../core/ipc.js";
-import { livePaneNonces, ownsPane, verifiableNonce } from "../core/tmux.js";
+import { alivePaneNonces, livePaneNonces, killNow, ownsPane, verifiableNonce } from "../core/tmux.js";
 import { readWorkerStatusRec } from "../core/workerLiveness.js";
 import { composeRound1Prompt, composeFixPrompt } from "../core/turn.js";
 import { sendRound, waitRound, type RoundDescriptor, type RoundSendDeps, type RoundWaitDeps } from "../core/roundProtocol.js";
@@ -36,9 +36,16 @@ export interface InitDeps {
   haveCmd(name: string): boolean;
   agentBinary(name: string): string | undefined;
   pickRandomAgent(topic: string): string | null;
-  /** pane id -> @ap_nonce for every live pane; EMPTY on any tmux error, which every ownership
-   *  check reads as "not ours" (livePaneNonces' own contract). */
-  livePanes(): Promise<Map<string, string>>;
+  /** pane id -> @ap_nonce for every pane still RUNNING something (a pane `remain-on-exit` kept
+   *  after its worker exited is dropped: this decides whether a stale worker dir may be reaped, and
+   *  a dead worker's dir may); EMPTY on any tmux error, which every ownership check reads as "not
+   *  ours" (alivePaneNonces' own contract). */
+  alivePanes(): Promise<Map<string, string>>;
+  /** pane id -> @ap_nonce for every pane tmux LISTS, dead ones included: the OWNERSHIP snapshot the
+   *  reap kills from. `alivePanes` cannot answer this — the pane it must kill is precisely one it
+   *  dropped as dead. */
+  ownedPanes(): Promise<Map<string, string>>;
+  killPane(pane: string): Promise<void>;
   /** The sha `refs/heads/<branch>` points at in `cwd`; "" when the ref, or the repo, is absent. */
   branchSha(cwd: string, branch: string): string;
 }
@@ -48,7 +55,7 @@ export function branchShaAt(cwd: string, branch: string): string {
   const r = runnerAt(cwd).run("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
   return r.code === 0 ? r.stdout.trim() : "";
 }
-const liveInitDeps: InitDeps = { haveCmd, agentBinary, pickRandomAgent, livePanes: livePaneNonces, branchSha: branchShaAt };
+const liveInitDeps: InitDeps = { haveCmd, agentBinary, pickRandomAgent, alivePanes: alivePaneNonces, ownedPanes: livePaneNonces, killPane: killNow, branchSha: branchShaAt };
 
 export async function run(args: string[]): Promise<number> {
   // ONE state tree per run, whatever directory the hub is standing in. Every state path derives
@@ -132,8 +139,21 @@ export async function initWith(tokens: string[], d: InitDeps): Promise<number> {
     // filesystems), and a throw here leaves `_quick` intact, so the retry simply holds again. Only
     // then the same-dir `_quick` rename, then the new art dir and its carried records.
     const wdests: string[] = [];
+    // The archive erases pane.json, the only record that can find this pane again, so the kill must
+    // come FIRST or the dead pane lingers with no owner: `remain-on-exit` keeps a crashed worker's
+    // screen standing "until ap reaps it", and this is the one reap that would otherwise walk away
+    // from it. Every dir here was PROVEN dead by deadWorkers (absent from the alive map), so the
+    // only question left is ownership — a pane listed under a different nonce, or not listed at
+    // all, belongs to someone else and is never touched.
+    const owned = await d.ownedPanes();
     try {
-      for (const w of stale.workers) { const wdest = archiveWorkerDir(w, slug, "stale"); if (wdest) wdests.push(wdest); }
+      for (const w of stale.workers) {
+        const pane = paneMetaReadForDir(w);
+        if (ownsPane(owned, pane.paneId, pane.nonce)) {
+          try { await d.killPane(pane.paneId); } catch (e) { log.warn(`quick init: could not kill the dead pane ${pane.paneId} of the earlier attempt (${(e as Error).message}); it may still be on screen`); }
+        }
+        const wdest = archiveWorkerDir(w, slug, "stale"); if (wdest) wdests.push(wdest);
+      }
     } catch (e) {
       log.error(`quick init: could not archive a dead worker dir of the earlier attempt (${(e as Error).message}) — ${art} is intact; clear it by hand or with /ap:stop`);
       return 1;
@@ -238,7 +258,7 @@ async function deadWorkers(topic: string, d: InitDeps): Promise<string[] | null>
     if (workerBusyStateForDir(wd)) return null;
     const pane = paneMetaReadForDir(wd);
     if (!pane.paneId) return null;
-    snap ??= await d.livePanes();
+    snap ??= await d.alivePanes();
     if (ownsPane(snap, pane.paneId, pane.nonce)) return null;
     if (snap.size === 0 || (snap.has(pane.paneId) && !verifiableNonce(pane.nonce))) return null;
     dead.push(wd);

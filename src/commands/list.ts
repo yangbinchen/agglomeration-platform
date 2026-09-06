@@ -4,7 +4,7 @@ import { repoStateDir, isArtifactDir } from "../core/paths.js";
 import { parseJob, jobPath, classifyJobLiveness, withMainCheckout } from "../core/job.js";
 import { readIfExists } from "../core/fsread.js";
 import { paneMetaReadForDir, outboxPath, parseEvent, type PaneMeta } from "../core/ipc.js";
-import { livePaneNonces, ownsPane } from "../core/tmux.js";
+import { paneSnapshot, ownsPane } from "../core/tmux.js";
 import { scanTopicWorkers } from "../core/workerLiveness.js";
 
 export function deriveState(lastEvent: string | undefined): string {
@@ -60,7 +60,12 @@ async function dispatchVerb(args: string[]): Promise<number> {
   process.stdout.write(`${W("PART", 32)} ${W("MODEL", 8)} ${W("TOPIC", 12)} ${W("PANE", 9)} ${W("STATE", 12)} LIVENESS\n`);
   process.stdout.write(`${"-".repeat(32)} ${"-".repeat(8)} ${"-".repeat(12)} ${"-".repeat(9)} ${"-".repeat(12)} --------\n`);
   const threshold = staleThresholdS();
-  const live = await livePaneNonces(); // one server-wide pane snapshot, not one scan per worker
+  // ONE server-wide snapshot, not one scan per worker — and one snapshot, not two, though the STATE
+  // column and the LIVENESS column ask different questions of the same pane: `[ORPHAN]` means "not
+  // ours" (a pane `remain-on-exit` kept after its worker exited is still ours), while the liveness
+  // verdict means "still running". Two back-to-back snapshots would answer the two columns from two
+  // instants and could disagree about a pane created or destroyed between them.
+  const { nonces: live, alive } = await paneSnapshot();
   const now = Date.now();
   for (const t of readdirSync(repo, { withFileTypes: true })) {
     if (!t.isDirectory()) continue;
@@ -69,7 +74,7 @@ async function dispatchVerb(args: string[]): Promise<number> {
     // Read-only: `ap list` reports the classifier's verdict but never ADVANCES the miss counter.
     // An operator running it in a `watch` loop must not be able to drive a worker to `pane-dead`
     // faster than the run's own scheduled rescans do.
-    const liveness = new Map(scanTopicWorkers(t.name, live, now).map((w) => [w.worker, w.verdict]));
+    const liveness = new Map(scanTopicWorkers(t.name, alive, now).map((w) => [w.worker, w.verdict]));
     for (const p of readdirSync(td, { withFileTypes: true })) {
       if (!p.isDirectory() || isArtifactDir(p.name)) continue;
       const dir = join(td, p.name);
@@ -80,7 +85,7 @@ async function dispatchVerb(args: string[]): Promise<number> {
       process.stdout.write(`${W(meta.agent, 32)} ${W(meta.model, 8)} ${W(t.name, 12)} ${W(pane, 9)} ${W(state, 12)} ${liveness.get(p.name) ?? "unknown"}\n`);
     }
   }
-  writeJobsSection(repo, live, filter, W);
+  writeJobsSection(repo, alive, filter, W);
   return 0;
 }
 
@@ -88,8 +93,9 @@ async function dispatchVerb(args: string[]): Promise<number> {
  *  one job record, so an operator who has never run a detached job sees exactly what they see today.
  *  Liveness is the job module's three-valued verdict, not the worker table's `[ORPHAN]`: a job hub
  *  whose nonce cannot be verified is UNKNOWN, and calling that dead would tell an operator their
- *  multi-hour run had died when it is running fine. */
-function writeJobsSection(repo: string, live: Map<string, string>, filter: string | undefined, W: (s: string, n: number) => string): void {
+ *  multi-hour run had died when it is running fine. Takes the ALIVE snapshot: a hub whose claude
+ *  exited leaves a pane behind (`remain-on-exit`) and must still read `dead`. */
+function writeJobsSection(repo: string, alive: Map<string, string>, filter: string | undefined, W: (s: string, n: number) => string): void {
   const rows: string[] = [];
   for (const t of readdirSync(repo, { withFileTypes: true })) {
     if (!t.isDirectory()) continue;
@@ -97,7 +103,7 @@ function writeJobsSection(repo: string, live: Map<string, string>, filter: strin
     const rec = parseJob(readIfExists(jobPath(t.name)));
     if (!rec) continue;
     const hub = `${rec.hub.agent}-${rec.hub.model}`;
-    const liveness = classifyJobLiveness(live, paneMetaReadForDir(join(repo, t.name, hub)));
+    const liveness = classifyJobLiveness(alive, paneMetaReadForDir(join(repo, t.name, hub)));
     rows.push(`${W(rec.topic, 24)} ${W(rec.command, 10)} ${W(hub, 20)} ${W(rec.session, 24)} ${liveness}`);
   }
   if (rows.length === 0) return;

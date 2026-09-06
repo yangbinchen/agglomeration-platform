@@ -1,5 +1,24 @@
 import { describe, it, expect } from "vitest";
-import { validateSlug, resolveMode, isWorkerRole, bootstrapFailureRc } from "../src/commands/spawn.js";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { validateSlug, resolveMode, isWorkerRole, bootstrapFailureRc, stampOrFail, READY_WAIT_DEPS } from "../src/commands/spawn.js";
+import { paneLive, paneOwned } from "../src/core/tmux.js";
+import { outboxWaitSince } from "../src/core/ipc.js";
+
+// The bootstrap ready-wait probes LIVENESS, never ownership. Pinned by IDENTITY because no
+// behavioural test can tell the two apart: they differ on exactly one pane shape — dead but still
+// ours, which `remain-on-exit` now keeps listed — and rebinding this to `paneOwned` is the #195 bug
+// itself, a wait that sits out the whole ready_timeout_s on a worker that died at bootstrap.
+describe("READY_WAIT_DEPS — the live bindings, pinned", () => {
+  it("paneAlive IS paneLive (the LIVENESS probe), never paneOwned", () => {
+    expect(READY_WAIT_DEPS.paneAlive).toBe(paneLive);
+    expect(READY_WAIT_DEPS.paneAlive).not.toBe(paneOwned);
+  });
+  it("wait IS the real outbox wait", () => {
+    expect(READY_WAIT_DEPS.wait).toBe(outboxWaitSince);
+  });
+});
 
 describe("spawn pure helpers", () => {
   it("validateSlug accepts lowercase/digit/hyphen ≤32, rejects others", () => {
@@ -49,5 +68,43 @@ describe("bootstrapFailureRc — 3 for a cold start, 1 for the worker's own erro
     for (const reason of ["pane_dead", "timeout", "error_event"] as const) {
       expect(bootstrapFailureRc(reason)).not.toBe(0);
     }
+  });
+});
+
+// Issue #195, P2: every ap pane is created with `remain-on-exit on`, so a worker that dies at
+// bootstrap keeps its screen for `capture-pane` instead of vanishing with it. The option rides the
+// stamping — one place, every placement path — and unlike the two stamps it is NOT load-bearing.
+// A PATH shim stands in for tmux (the same device tests/tmux.test.ts uses): no server is touched.
+describe("stampOrFail — remain-on-exit rides the ownership stamping", () => {
+  const NONCE = "11111111-1111-4111-8111-111111111111";
+  /** `body` is a /bin/sh tmux stand-in; `__LOG__` is replaced by the argv log it appends to. */
+  async function withFakeTmux<R>(body: string, fn: (argv: () => string[]) => Promise<R>): Promise<R> {
+    const dir = mkdtempSync(join(tmpdir(), "ap-stamp-"));
+    const logFile = join(dir, "argv.log");
+    writeFileSync(join(dir, "tmux"), body.replace("__LOG__", logFile), { mode: 0o755 });
+    const orig = process.env.PATH;
+    process.env.PATH = dir;   // ONLY the stub is reachable
+    try {
+      return await fn(() => (existsSync(logFile) ? readFileSync(logFile, "utf8").trim().split("\n") : []));
+    } finally { process.env.PATH = orig; }
+  }
+  const LOG_ALL = '#!/bin/sh\nprintf \'%s\\n\' "$*" >> __LOG__\nexit 0\n';
+  // set-option -p -t <pane> <opt> <val>  ->  the option name
+  const options = (argv: string[]): string[] => argv.map((l) => l.split(" ")[4]);
+
+  it("sets it AFTER both stamps, on the pane it just stamped", async () => {
+    await withFakeTmux(LOG_ALL, async (argv) => {
+      expect(await stampOrFail("%5", NONCE, "alpha", "codex", "demo")).toBe(true);
+      expect(options(argv())).toEqual(["@ap_nonce", "@ap_state", "remain-on-exit"]);
+      expect(argv()[2]).toBe(`set-option -p -t %5 remain-on-exit on`);
+    });
+  });
+
+  it("a tmux that REFUSES it does not fail the spawn — the pane only loses its tail", async () => {
+    const REFUSE_REMAIN = '#!/bin/sh\nprintf \'%s\\n\' "$*" >> __LOG__\ncase "$*" in *remain-on-exit*) exit 1;; esac\nexit 0\n';
+    await withFakeTmux(REFUSE_REMAIN, async (argv) => {
+      expect(await stampOrFail("%5", NONCE, "alpha", "codex", "demo")).toBe(true);
+      expect(options(argv())).toContain("remain-on-exit");
+    });
   });
 });

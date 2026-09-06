@@ -69,7 +69,7 @@ describe("send pane ownership", () => {
   }
   const probes = () => {
     const sent: string[] = [];
-    return { sent, deps: (owned: boolean) => ({ paneOwned: async () => owned, paneSend: async (p: string) => { sent.push(p); } }) };
+    return { sent, deps: (owned: boolean) => ({ paneLive: async () => owned, paneSend: async (p: string) => { sent.push(p); } }) };
   };
 
   it("nonce matches → nudges the pane (the healthy path is unchanged)", async () => {
@@ -92,9 +92,9 @@ describe("send pane ownership", () => {
   it("legacy pane.json (no nonce) is unverifiable → refused by the real probe, no tmux call", async () => {
     seedOwner(null);
     const { sent } = probes();
-    // paneSend is still injected, but paneOwned is the REAL one: an empty recorded nonce is refused
+    // paneSend is still injected, but paneLive is the REAL one: an empty recorded nonce is refused
     // before any tmux call, so this exercises the shipped gate rather than a fake.
-    expect(await send(["bravo", "demo", "hello"], { paneOwned: (await import("../src/core/tmux.js")).paneOwned, paneSend: async (p: string) => { sent.push(p); } })).toBe(1);
+    expect(await send(["bravo", "demo", "hello"], { paneLive: (await import("../src/core/tmux.js")).paneLive, paneSend: async (p: string) => { sent.push(p); } })).toBe(1);
     expect(sent).toEqual([]);
   });
 });
@@ -122,7 +122,7 @@ describe("send --no-done-instruction", () => {
     writeFileSync(join(d, "outbox.jsonl"), "");
     return d;
   }
-  const deps = { paneOwned: async () => true, paneSend: async () => {} };
+  const deps = { paneLive: async () => true, paneSend: async () => {} };
   const inboxOf = (d: string) => readFileSync(join(d, "inbox.md"), "utf8");
 
   it("omits the generic done contract, keeps From: and END_OF_INSTRUCTION, in either flag order", async () => {

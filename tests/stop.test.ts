@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { teardownBatch, GRACEFUL_BATCH_WAIT_MS, run as stopRun } from "../src/commands/stop.js";
+import { teardownBatch, GRACEFUL_BATCH_WAIT_MS, run as stopRun, liveDeps } from "../src/commands/stop.js";
+import { alivePaneNonces, livePaneNonces, killNow } from "../src/core/tmux.js";
 
 /** `live` is the tmux snapshot (pane id -> its live @ap_nonce); `recorded` is what each agent's
  *  pane.json says. By default every agent records the nonce its pane actually carries — the healthy
@@ -30,6 +31,20 @@ function deps(live: Record<string, string>, recorded?: Record<string, string>) {
 const PAIRS = [
   { agent: "bravo", model: "codex" }, { agent: "alpha", model: "codex" }, { agent: "charlie", model: "codex" },
 ];
+
+// teardownBatch skips every pane the snapshot omits (`if (!live.has(owner.paneId)) continue`), so
+// under the ALIVE map a worker that exited on its own would never be killed or reaped — precisely
+// the panes `remain-on-exit` now leaves standing. Identity, not behaviour: the two maps differ only
+// on dead-but-ours panes, and no fixture built from a live snapshot can tell them apart.
+describe("liveDeps — the live bindings, pinned", () => {
+  it("livePaneNonces IS tmux's OWNERSHIP snapshot, never alivePaneNonces", () => {
+    expect(liveDeps().livePaneNonces).toBe(livePaneNonces);
+    expect(liveDeps().livePaneNonces).not.toBe(alivePaneNonces);
+  });
+  it("killNow is the real one (the batch's second, ungraceful pass)", () => {
+    expect(liveDeps().killNow).toBe(killNow);
+  });
+});
 
 describe("stop batch", () => {
   it("sleeps ONCE for a 3-pane batch and killNow each; archive all", async () => {

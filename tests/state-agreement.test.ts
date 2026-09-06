@@ -54,7 +54,7 @@ function seedWorker(): string {
 function deps(stamped?: string): { sent: string[]; d: SendCmdDeps } {
   const sent: string[] = [];
   const d: SendCmdDeps = {
-    paneOwned: async () => true,
+    paneLive: async () => true,
     paneSend: async (p: string) => { sent.push(p); },
     ...(stamped === undefined ? {} : { paneState: async () => stamped }),
   };

@@ -264,7 +264,11 @@ export type JobLiveness = "alive" | "dead" | "unknown";
  *  that is not platform-minted (no tmux answer could ever settle it) and a verifiable nonce whose
  *  pane is gone or now belongs to someone else. Only the second is evidence of death; reporting the
  *  first as `dead` is what the 0.5.30 fix forbade, and here it would tell an operator their job had
- *  died when it is running fine. */
+ *  died when it is running fine.
+ *
+ *  `live` must be the ALIVE snapshot (`alivePaneNonces`): every ap pane carries `remain-on-exit on`,
+ *  so a hub whose claude exited is still listed and still ours, and the ownership snapshot would
+ *  report it alive forever. */
 export function classifyJobLiveness(live: Map<string, string>, owner: PaneOwner | null): JobLiveness {
   if (!owner || !owner.paneId) return "unknown";
   if (ownsPane(live, owner.paneId, owner.nonce)) return "alive";
@@ -341,7 +345,9 @@ export interface WorkerLiveness { kind: WorkerLivenessKind; verdict: string; dea
  *  what the pane shows, and ordering the pane check first would report it `alive` forever — which
  *  is precisely the ten-hour silence this layer was written for.
  *
- *  Pure: every input is a value, including `now` and the snapshot. */
+ *  Pure: every input is a value, including `now` and the snapshot — which must be the ALIVE one
+ *  (`alivePaneNonces`), since `remain-on-exit` keeps a dead worker's pane listed and carrying our
+ *  nonce, and rule 3 would then answer `alive` for a worker that is gone. */
 export function classifyWorkerLiveness(
   rec: WorkerRec,
   status: WorkerStatusRec | null,

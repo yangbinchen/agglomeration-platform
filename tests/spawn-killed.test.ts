@@ -314,6 +314,24 @@ describe("bootstrapFailed — the ARM, not just the pure reason/rc split (spec D
     expect(rec).toContain("forensics:pane_dead");
   });
 
+  // Issue #195: the tail went to stderr and nowhere else, so the filed issue carried a reason and a
+  // report path and nothing about WHY the TUI died.
+  it("hands captureSpawnFailure the 25-line capture it already took — the issue's only lead", async () => {
+    home(); mkWorker(CTX.agent, CTX.model, CTX.topic);
+    const rec: string[] = [];
+    let filed: string | undefined = "never called";
+    const rc = await bootstrapFailed(CTX, { event: "error", note: PANE_DIED_NOTE }, recordingDeps(rec, {
+      // Distinguishable per call: captureFailure takes its own capture, and the tail that is FILED
+      // must be the 25-line one bootstrapFailed took before the pane was killed.
+      capturePane: async (pane, n) => `capture(${pane},${n})`,
+      captureSpawnFailure: (opts) => { rec.push(`forensics:${opts.reason}`); filed = opts.paneTail; return captureSpawnFailure(opts); },
+    }));
+    expect(rc).toBe(3);
+    expect(filed).toBe("capture(%89,25)");
+    // and the order is the one the arm has always run
+    expect(rec).toEqual(["capture:pane_dead", "forensics:pane_dead", "kill:%89", "status:error/bootstrap-failed", "archive:FAILED"]);
+  });
+
   it("the worker's OWN error event stays rc 1 — a second attempt would fail the same way", async () => {
     const { rc, rec } = await arm({ event: "error", message: "codex bootstrap failed" });
     expect(rc).toBe(1);

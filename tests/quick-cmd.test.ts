@@ -35,7 +35,7 @@ describe("quick init", () => {
   afterEach(() => { outSpy.restore(); h.cleanup(); });
 
   // Deterministic deps: provider present + on PATH, agent fixed — no env dependency.
-  const okDeps: InitDeps = { haveCmd: () => true, agentBinary: () => "codex", pickRandomAgent: () => "bravo", livePanes: async () => new Map(), branchSha: () => "" };
+  const okDeps: InitDeps = { haveCmd: () => true, agentBinary: () => "codex", pickRandomAgent: () => "bravo", alivePanes: async () => new Map(), ownedPanes: async () => new Map(), killPane: async () => {}, branchSha: () => "" };
 
   it("scaffolds _quick, validates provider, prints KV; rc 0", async () => {
     const rc = await initWith(["add", "oauth", "login", "--provider", "codex"], okDeps);
@@ -1354,10 +1354,11 @@ describe("quick init: a predecessor that initialised but never reached a worker 
   const ARGS = ["stale", "topic", "--provider", "codex"];
   /** tmux answered: the hub's own pane is in the snapshot. */
   const ANSWERED = () => new Map([["%0", randomUUID()]]);
-  function deps(o: { panes?: Map<string, string>; sha?: string } = {}): InitDeps {
+  function deps(o: { panes?: Map<string, string>; owned?: Map<string, string>; killed?: string[]; sha?: string } = {}): InitDeps {
     return {
       haveCmd: () => true, agentBinary: () => "codex", pickRandomAgent: () => "charlie",
-      livePanes: async () => o.panes ?? ANSWERED(), branchSha: () => o.sha ?? "base000",
+      alivePanes: async () => o.panes ?? ANSWERED(), ownedPanes: async () => o.owned ?? new Map(), killPane: async (p) => { o.killed?.push(p); },
+      branchSha: () => o.sha ?? "base000",
     };
   }
   /** What init + branch leave behind before any turn: the init records plus the branch snapshot. */
@@ -1666,6 +1667,57 @@ describe("quick init: a predecessor that initialised but never reached a worker 
     expect(staleDirs()).toEqual([]);
     expect(existsSync(join(art, "topic-text.txt"))).toBe(true);
   });
+
+  // The reap archives a crashed worker's dir, and pane.json goes with it — the only record that can
+  // name that pane again. `remain-on-exit` keeps the dead pane on screen "until ap reaps it", so
+  // without the kill this is the one path where that promise is false, and dead panes pile up run
+  // after run.
+  describe("the dead pane goes before the dir does", () => {
+    it("a dead pane still carrying OUR nonce is killed, and the dir is archived", async () => {
+      seedPredecessor();
+      const nonce = seedWorker("idle", "%7");
+      const killed: string[] = [];
+      expect(await initWith(ARGS, deps({ owned: new Map([["%7", nonce]]), killed }))).toBe(0);
+      expect(killed).toEqual(["%7"]);
+      expect(archivedWorkers()).toHaveLength(1);
+    });
+
+    it("the id is listed under ANOTHER nonce (tmux recycled it): not ours, never touched — the dir still archives", async () => {
+      seedPredecessor();
+      seedWorker("idle", "%7");
+      const killed: string[] = [];
+      expect(await initWith(ARGS, deps({ owned: new Map([["%7", randomUUID()]]), killed }))).toBe(0);
+      expect(killed).toEqual([]);
+      expect(archivedWorkers()).toHaveLength(1);
+    });
+
+    it("no tmux answer at all (empty ownership map): nothing killed, the dir still archives", async () => {
+      seedPredecessor();
+      seedWorker("idle", "%7");
+      const killed: string[] = [];
+      expect(await initWith(ARGS, deps({ killed }))).toBe(0);
+      expect(killed).toEqual([]);
+      expect(archivedWorkers()).toHaveLength(1);
+    });
+
+    it("a LIVE pane is not reaped at all, so nothing is killed — the refusal comes first", async () => {
+      seedPredecessor();
+      const nonce = seedWorker("idle", "%7");
+      const killed: string[] = [];
+      const listed = new Map([["%7", nonce]]);
+      expect(await initWith(ARGS, deps({ panes: listed, owned: listed, killed }))).toBe(2);
+      expect(killed).toEqual([]);
+      expect(staleDirs()).toEqual([]);
+    });
+
+    it("a kill that throws is a warning, not a failure: the archive still happens", async () => {
+      seedPredecessor();
+      const nonce = seedWorker("idle", "%7");
+      const d: InitDeps = { ...deps({ owned: new Map([["%7", nonce]]) }), killPane: async () => { throw new Error("tmux gone"); } };
+      expect(await initWith(ARGS, d)).toBe(0);
+      expect(archivedWorkers()).toHaveLength(1);
+    });
+  });
 });
 
 describe("quick init: a stale archive keeps the predecessor's git side effects recoverable (real git)", () => {
@@ -1695,7 +1747,7 @@ describe("quick init: a stale archive keeps the predecessor's git side effects r
   }
   const realDeps = (): InitDeps => ({
     haveCmd: () => true, agentBinary: () => "codex", pickRandomAgent: () => "bravo",
-    livePanes: async () => new Map([["%0", randomUUID()]]),
+    alivePanes: async () => new Map([["%0", randomUUID()]]), ownedPanes: async () => new Map(), killPane: async () => {},
     branchSha: (cwd, b) => { try { return git(cwd, "rev-parse", "--verify", "--quiet", `refs/heads/${b}`); } catch { return ""; } },
   });
   const head = (root: string) => git(root, "symbolic-ref", "--short", "HEAD");

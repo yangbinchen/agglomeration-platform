@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { freshHome } from "./helpers/tmpHome.js";
 import { virtualClock } from "./helpers/clock.js";
-import { run, waitRun, relayRun } from "../src/commands/job.js";
+import { run, waitRun, relayRun, realWaitDeps } from "../src/commands/job.js";
+import { alivePaneNonces, livePaneNonces } from "../src/core/tmux.js";
 import { formatJob, jobPath, type JobRecord } from "../src/core/job.js";
 import { outboxPath } from "../src/core/ipc.js";
 import { commandArtDir } from "../src/core/forensics.js";
@@ -140,6 +141,17 @@ async function capture(fn: () => Promise<number>): Promise<{ rc: number; out: st
 // mid-run spun silently for 22 minutes past the hub's `done`. So every path through the verb prints
 // exactly one JS= line, and the loop turns the one remaining silence — ap never ran — into
 // JS=unreachable.
+// `snapshot` feeds the mid-wait worker rescan, which is a LIVENESS question. Bound to the ownership
+// map instead, a worker whose TUI exited reads alive forever — `remain-on-exit` keeps its pane
+// listed under our nonce — and the wait rides the whole budget out. Nothing behavioural separates
+// the two maps except that one pane shape, so the binding is pinned by identity.
+describe("realWaitDeps — the live bindings, pinned", () => {
+  it("snapshot IS alivePaneNonces (LIVENESS), never livePaneNonces (OWNERSHIP)", () => {
+    expect(realWaitDeps().snapshot).toBe(alivePaneNonces);
+    expect(realWaitDeps().snapshot).not.toBe(livePaneNonces);
+  });
+});
+
 describe("job wait always speaks — exactly one JS= line per invocation", () => {
   function seedOutbox(lines: Array<Record<string, unknown>>): void {
     const p = outboxPath(REC.hub.agent, REC.hub.model, REC.topic);

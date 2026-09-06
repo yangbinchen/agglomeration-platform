@@ -50,7 +50,7 @@ import { buildCorpusDigest, leaderMetricOf, type CorpusEntry } from "../core/aut
 import { agentBinary, consultTimeout } from "../core/contracts.js";
 import { inboxWrite, inboxPath, outboxPath, outboxOffset, paneMetaRead, resolveModel, parseEvent } from "../core/ipc.js";
 import { ledgerPath, controllerGenPath, appendEvent, replayLedger, readGen, renderGen, isStaleGenError, type LedgerEventKind } from "../core/autoresearchLedger.js";
-import { paneSend, killNow, paneOwned, livePaneNonces, ownsPane, killPreflightOrphans } from "../core/tmux.js";
+import { paneSend, killNow, paneOwned, paneLive, livePaneNonces, alivePaneNonces, ownsPane, killPreflightOrphans } from "../core/tmux.js";
 import { haveCmd } from "../core/deps.js";
 import { spawnListArg, parsePanesFile, spawnResultsTsv, spawnTally, type SpawnResult } from "../core/roster.js";
 import { pickAgents } from "../core/agents.js";
@@ -522,7 +522,7 @@ export interface ExperimentSendDeps {
   now(): string;                                       // isoUtc — last_event_ts
   probeHardware(): string;                             // best-effort "no-gpu" or "detected_at\t..\ngpu\t.."
   paneSend(pane: string, line: string): Promise<void>; // injected (tmux); tests pass a fake/throwing one
-  paneOwned?(pane: string, nonce: string): Promise<boolean>; // ownership gate for that nudge; defaults to the real probe
+  paneLive?(pane: string, nonce: string): Promise<boolean>;  // liveness gate for that nudge; defaults to the real probe
   consultTimeout(): number;                            // per-experiment cap (e.g. 1800); from contracts
   dryRun?: boolean;                                    // skip the pane nudge (tests)
   inboxWrite?: typeof inboxWrite;                      // DI seam (crash-injection tests)
@@ -723,8 +723,9 @@ export async function experimentSendWith(args: string[], deps: ExperimentSendDep
   if (!deps.dryRun) {
     const owner = paneMetaRead(agent, model, topic);
     // The nudge is TYPED INTO the pane and executed there, so a reused pane id must never receive
-    // it: nudge only while the recorded @ap_nonce is still on the live pane.
-    if (owner && await (deps.paneOwned ?? paneOwned)(owner.paneId, owner.nonce)) {
+    // it, and neither must a pane `remain-on-exit` kept after its worker exited: nudge only while
+    // the recorded @ap_nonce is on the pane and the pane still runs something.
+    if (owner && await (deps.paneLive ?? paneLive)(owner.paneId, owner.nonce)) {
       try { await deps.paneSend(owner.paneId, taskNudge(inboxPath(agent, model, topic), model)); }
       catch (e) { log.warn(`autoresearch experiment-send: pane nudge failed (${(e as Error).message}); worker may not have noticed inbox`); }
     } else if (owner) {
@@ -866,7 +867,7 @@ function readSlice(path: string, start: number, end: number): string {
   } catch { return ""; }
 }
 
-export async function monitorRun(args: string[], opts?: { home?: string; cwd?: string; paneOwned?: (p: string, nonce: string) => Promise<boolean>; sleepMs?: number; paneCheckEveryTicks?: number; maxTicks?: number }): Promise<number> {
+export async function monitorRun(args: string[], opts?: { home?: string; cwd?: string; paneLive?: (p: string, nonce: string) => Promise<boolean>; sleepMs?: number; paneCheckEveryTicks?: number; maxTicks?: number }): Promise<number> {
   // Strip --once anywhere so it's position-independent; the rest are the 2 positionals.
   const once = args.includes("--once");
   const pos = args.filter((a) => a !== "--once");
@@ -917,11 +918,12 @@ export async function monitorRun(args: string[], opts?: { home?: string; cwd?: s
   // Bounded-loop escape hatch (non-once path only): once the worker's tmux pane is gone (its session
   // was torn down or killed) the monitor has nothing left to watch, so stop instead of polling a
   // static outbox forever. Probe the pane every paneCheckEvery ticks and exit after two consecutive
-  // dead probes (a transient probe blip must not stop a live monitor). The probe is ownership-
-  // checked, so a pane id a restarted tmux reassigned reads as gone rather than as this worker.
+  // dead probes (a transient probe blip must not stop a live monitor). The probe is ownership- AND
+  // dead-checked, so neither a pane id a restarted tmux reassigned nor a pane `remain-on-exit` kept
+  // after its worker exited reads as this worker still running.
   // No pane.json keeps the legacy unbounded loop — a real spawned worker always has one. Probe, cadence,
   // and sleep are injectable so this is testable without real tmux or 2s waits.
-  const probePane = opts?.paneOwned ?? paneOwned;
+  const probePane = opts?.paneLive ?? paneLive;
   const paneCheckEvery = opts?.paneCheckEveryTicks ?? 15;
   const tickMs = opts?.sleepMs ?? 2000;
   const maxTicks = opts?.maxTicks ?? Infinity;   // test bound only: the live loop is unbounded
@@ -1572,8 +1574,8 @@ const liveFreshWorkerDeps: AutoresearchFreshWorkerDeps = {
 
 export interface AutoresearchResumeDeps {
   now(): string;
-  /** ONE server-wide pane+nonce snapshot for the whole liveness pass. */
-  livePaneNonces(): Promise<Map<string, string>>;
+  /** ONE server-wide pane+nonce snapshot for the whole liveness pass, dead panes already dropped. */
+  alivePaneNonces(): Promise<Map<string, string>>;
   freshWorker(topic: string, agent: string): Promise<number>;
   stdout?: (line: string) => void;
   opts?: PathOpts;
@@ -1685,9 +1687,10 @@ export async function resumeWith(args: string[], deps: AutoresearchResumeDeps): 
   // 4. Pass 3 — pane liveness: interrupt dead working lanes, respawn dead idle ones, report.
   // ONE server-wide pane+nonce snapshot for every lane (a per-pane probe re-runs the identical
   // full-server scan N times); a tmux-less server yields an empty map = every pane dead. Liveness
-  // here means OURS-and-live: a pane id a restarted tmux reassigned must not keep a dead lane from
-  // being respawned (nor report the lane as alive).
-  const live = await deps.livePaneNonces().catch(() => new Map<string, string>());
+  // here means OURS-and-live: neither a pane id a restarted tmux reassigned nor a pane
+  // `remain-on-exit` kept after its worker exited may keep a dead lane from being respawned (nor
+  // report the lane as alive), which is why the snapshot is the ALIVE one.
+  const live = await deps.alivePaneNonces().catch(() => new Map<string, string>());
   const rows: string[] = [];
   const monitors: string[] = [];
   for (const agent of agents) {
@@ -1747,7 +1750,7 @@ export async function resumeWith(args: string[], deps: AutoresearchResumeDeps): 
 
 const liveResumeDeps: AutoresearchResumeDeps = {
   now: () => isoUtc(),
-  livePaneNonces: () => livePaneNonces(),
+  alivePaneNonces: () => alivePaneNonces(),
   freshWorker: (t, i) => freshWorkerWith([t, i], liveFreshWorkerDeps),
 };
 

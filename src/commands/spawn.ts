@@ -15,7 +15,7 @@ import { identityWrite, identityPath, seedWorkerStatus, writeWorkerStatus, inbox
 import { paneNonceFor } from "../core/roster.js";
 import { pickRandomAgent, agentInUse, formatCollisionError } from "../core/agents.js";
 import { agentBinary, agentDefaultMode, agentModeArgs, agentReadyTimeout, agentBootstrapSleep } from "../core/contracts.js";
-import { wrapLaunch, splitRight, splitDown, respawn, paneOwned, paneNonceSet, paneStateSet, paneLabelSet, paneSend, killNow, capturePane, ensurePaneBorders, ensureWindowBorderStatus, sessionExists, newSession, validSessionName } from "../core/tmux.js";
+import { wrapLaunch, splitRight, splitDown, respawn, paneOwned, paneLive, paneNonceSet, paneStateSet, paneRemainOnExitSet, paneLabelSet, paneSend, killNow, capturePane, ensurePaneBorders, ensureWindowBorderStatus, sessionExists, newSession, validSessionName } from "../core/tmux.js";
 import { labelFor } from "../core/colors.js";
 import { taskNudge } from "./send.js";
 import { captureFailure, captureSpawnFailure, NO_EVENT_SENTINEL, type FailureReason } from "../core/forensics.js";
@@ -53,14 +53,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  can never be proven ap's again: recording the nonce anyway would leave a worker no teardown could
  *  ever kill, so the pane goes now (best-effort — the same tmux failure may well defeat the kill,
  *  and the message says so). Returns false when the caller must abort the spawn. */
-async function stampOrFail(pane: string, nonce: string, agent: string, model: string, topic: string): Promise<boolean> {
+export async function stampOrFail(pane: string, nonce: string, agent: string, model: string, topic: string): Promise<boolean> {
   // Both stamps or neither: @ap_state is the hub's proof that the tree it resolves is the tree this
   // worker was given, and a pane carrying one stamp without the other is a pane whose answers cannot
   // be trusted either way.
   const missing = !(await paneNonceSet(pane, nonce)) ? "@ap_nonce"
     : !(await paneStateSet(pane, paneStateStamp(agent, model, topic))) ? "@ap_state"
     : "";
-  if (!missing) return true;
+  if (!missing) {
+    // AFTER both stamps and best-effort, never fatal: a pane that keeps its screen when its worker
+    // dies is what gives the failure report and the tracker issue the tail that explains the death.
+    // A pane that refused the option simply loses that tail — today's behaviour — so the spawn goes on.
+    if (!(await paneRemainOnExitSet(pane))) log.warn(`could not set remain-on-exit on ${pane}; if this worker dies at bootstrap its pane will close and take its last lines with it`);
+    return true;
+  }
   captureSpawnFailure({ agent, model, topic, reason: "pane_failed", detail: `could not stamp ${missing} on ${pane}` });
   await killNow(pane);
   log.error(`could not stamp the ownership nonce on ${pane} (tmux unreachable?): ${missing} was refused; the pane was torn down rather than left unownable — check for a stray pane with: tmux list-panes -a`);
@@ -102,7 +108,16 @@ export interface ReadyWaitDeps {
  *  anyone noticed. Deliberately NO `extendMult` (default 1 = off): the turn waits extend for a live
  *  worker that is merely slow, but a bootstrap deadline a silent pane can stretch is not a deadline.
  *  The probe is ownership-checked (nonce, not id alone) for the reason waitLive.ts carries: a pane id
- *  can name a stranger's pane after a tmux restart. */
+ *  can name a stranger's pane after a tmux restart — and it is the LIVE probe (`paneLive`), because
+ *  every ap pane carries `remain-on-exit on`: the pane of a TUI that died at bootstrap is still
+ *  listed, still ours, and asking ownership alone would sit here for the whole ready_timeout_s. */
+/** The live bindings, hoisted out of the call site so a test can assert the IDENTITY of the pane
+ *  probe: `paneAlive` must be `paneLive` (LIVENESS) and never `paneOwned` (OWNERSHIP). The identity
+ *  pin is what stops the bootstrap probe from silently becoming the ownership probe again — the
+ *  #195 bug, which no behavioural test catches because a pane that is dead but still ours answers
+ *  the two probes differently only when `remain-on-exit` kept its screen. */
+export const READY_WAIT_DEPS: ReadyWaitDeps = { wait: outboxWaitSince, paneAlive: paneLive };
+
 export function readyWait(
   ctx: { agent: string; model: string; topic: string; pane: string; nonce: string; readyTimeout: number },
   deps: ReadyWaitDeps,
@@ -208,9 +223,10 @@ export async function spawnKilled(
  *  process itself (spawnKilled does, in a finally). Fires at most once — a second signal must not
  *  restart a sequence that is already archiving. */
 /** The bootstrap-failure sequence for a ready-wait that ended without a `ready`: the pane tail and
- *  the outbox to stderr, forensics, the pane killed, the seed stamped over with the truth, the state
- *  archived — and the EXIT CODE the caller branches on. Split out of `dispatchVerb` for the reason
- *  `spawnKilled` is: `implement spawn-slices` retries rc 3 and falls back on a second one (D2), and
+ *  the outbox to stderr, forensics (which files that same tail on the tracker issue — stderr is read
+ *  by whoever is watching, the issue by whoever triages later), the pane killed, the seed stamped
+ *  over with the truth, the state archived — and the EXIT CODE the caller branches on. Split out of
+ *  `dispatchVerb` for the reason `spawnKilled` is: `implement spawn-slices` retries rc 3 and falls back on a second one (D2), and
  *  an arm no test can RUN is an arm that can go back to returning 1 with the whole suite green.
  *  Takes `SpawnKilledDeps` — the same side effects, minus the re-raise, in the same order. */
 export async function bootstrapFailed(
@@ -234,6 +250,7 @@ export async function bootstrapFailed(
     agent, model, topic, reason,
     detail: bootstrapFailureDetail(ev),
     failureReportPath: fr.ok ? fr.path : undefined,
+    paneTail: tail,   // the capture from above, not a second one: the pane is killed a few lines down
   });
   await deps.killNow(pane);   // no ownership re-check: this id was created by THIS call, it cannot be stale
   // stamp the truth over the seed: a FAILED archive must not claim a dispatchable state for a worker that never reported (`error` is terminal, so no gate changes)
@@ -396,7 +413,7 @@ async function dispatchVerb(args: string[]): Promise<number> {
     // deadline is shorter than ours (the SIGTERM guard, which fails the worker closed and re-raises).
     const ev = await withSigtermGuard(
       () => spawnKilled({ agent, model, topic, pane, readyTimeout }, realSpawnKilledDeps()),
-      () => readyWait({ agent, model, topic, pane, nonce, readyTimeout }, { wait: outboxWaitSince, paneAlive: paneOwned }),
+      () => readyWait({ agent, model, topic, pane, nonce, readyTimeout }, READY_WAIT_DEPS),
     );
     if (!ev || ev.event === "error") {
       return await bootstrapFailed({ agent, model, topic, pane, readyTimeout }, ev, realSpawnKilledDeps());

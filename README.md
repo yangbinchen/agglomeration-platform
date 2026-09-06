@@ -24,6 +24,11 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 The most recent releases, newest first. Every entry has a dated design record under
 `docs/superpowers/specs/`; the full history is `git log`.
 
+- **0.5.93 — 2026-09-06 · spawn failures show why.** A failed spawn files the pane's last fifteen
+  non-empty lines on its tracker issue (`pane_tail=`, percent-encoded, secrets scrubbed), and every
+  ap pane is created with `remain-on-exit` so a worker that dies at bootstrap keeps its screen until
+  ap reaps it: a dead pane is not alive for the bootstrap and liveness probes but still ours for
+  `stop`'s sweep, and quick init kills a dead pane before it archives the worker's dir. Closes #195.
 - **0.5.92 — 2026-09-06 · reachable success criteria.** `/ap:design` asks each Success Criteria
   bullet that needs more than this run's seat and checkout to say where and with what data it is
   measured, and to tag one this run cannot produce `[deferred: <named later run>]`; `/ap:implement`
@@ -626,7 +631,7 @@ There are **two roots**:
 
 ```
 npm run typecheck   # tsc --noEmit
-npm run test        # vitest run   (3,404 tests)
+npm run test        # vitest run   (3,430 tests)
 npm run lint        # eslint
 npm run build       # esbuild -> dist/ap.cjs  (commit the result)
 ```

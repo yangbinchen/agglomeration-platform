@@ -52,7 +52,7 @@ import {
   outboxOffset, outboxPath, outboxTerminalSince, paneMetaRead, statusPath, workerBusyState,
   workerStatusReport, type Clock, type OutboxEvent,
 } from "./ipc.js";
-import { paneOwned } from "./tmux.js";
+import { paneLive } from "./tmux.js";
 import { recordHubFlag } from "./forensics.js";
 import {
   ARTIFACT_ACCEPT_KEY, END_OF_ARTIFACT, WAIT_ACCEPTED, artifactBackstop,
@@ -207,14 +207,14 @@ export function latestNonSkippedUnsafe(art: string, agent: string, chain: PhaseK
 
 /** The seams the guard's evidence probes read through: the two ids they need (the agent is already
  *  a guard arg), plus the probes themselves — the frozen `workerBusyState` and the real tmux
- *  `paneOwned` by default. The send verbs pass their own `SendDeps` probes through, so the guard and
+ *  `paneLive` by default. The send verbs pass their own `SendDeps` probes through, so the guard and
  *  dispatchPrompt's busy-gate answer from ONE seam. Omit the whole object for the history-only
  *  guard. */
 export interface GuardLive {
   topic: string;
   provider: string;
   busyState?(agent: string, model: string, topic: string): string | null;
-  paneOwned?(pane: string, nonce: string): Promise<boolean>;
+  paneLive?(pane: string, nonce: string): Promise<boolean>;
 }
 
 /** The evidence quadruple, in the order it is probed. All four must hold to override a skip; the
@@ -264,7 +264,7 @@ async function overrideEvidence(
   // "we checked and the pane is gone".
   if (!owner.nonce) return "pane.json predates ownership nonces (cannot confirm the pane)";
   let alive = false;
-  try { alive = await (live.paneOwned ?? paneOwned)(owner.paneId, owner.nonce); } catch { alive = false; }
+  try { alive = await (live.paneLive ?? paneLive)(owner.paneId, owner.nonce); } catch { alive = false; }
   if (!alive) return `pane ${owner.paneId} is gone or is not ours`;
   return null;
 }
@@ -318,10 +318,11 @@ export interface SendDeps {
    *  seam: the send verbs hand it to `guardSkipped` too, so the guard's evidence probe and this
    *  module's rc-3 busy-gate can never answer differently. */
   busyState?(agent: string, model: string, topic: string): string | null;
-  /** tmux pane-ownership probe for the guard's fourth evidence leg (dispatchPrompt itself never
+  /** tmux pane-liveness probe for the guard's fourth evidence leg (dispatchPrompt itself never
    *  probes panes). Takes the recorded nonce as well as the id: a reused id must not read as "the
-   *  worker's pane is alive". Defaults to the real `paneOwned`; injected only by tests. */
-  paneOwned?(pane: string, nonce: string): Promise<boolean>;
+   *  worker's pane is alive", and neither must a pane `remain-on-exit` kept after its worker exited.
+   *  Defaults to the real `paneLive`; injected only by tests. */
+  paneLive?(pane: string, nonce: string): Promise<boolean>;
 }
 
 export interface WaitDeps {
@@ -337,7 +338,7 @@ export const liveSendDeps: SendDeps = {
   offsetFor: (i, m, t) => outboxOffset(outboxPath(i, m, t)),
   send: sendRun,
   busyState: workerBusyState,
-  paneOwned,
+  paneLive,
 };
 
 export const liveWaitDeps: WaitDeps = {
@@ -393,7 +394,7 @@ export async function phaseSend(
   };
   const untriggered = hooks.preGuard?.(io);
   if (untriggered) return skipDispatch(row, agent, stateFile, untriggered.skip);
-  if (await guardSkipped(row, art, agent, stateFile, { topic, provider, busyState: d.busyState, paneOwned: d.paneOwned })) return 0;
+  if (await guardSkipped(row, art, agent, stateFile, { topic, provider, busyState: d.busyState, paneLive: d.paneLive })) return 0;
   const prep = hooks.prepare(io);
   if ("fail" in prep) return prep.fail;
   if ("skip" in prep) return skipDispatch(row, agent, stateFile, prep.skip);

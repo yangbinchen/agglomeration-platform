@@ -53,7 +53,7 @@ function seedEvidence(opts: { status?: "reported" | "seed" | "absent"; terminal?
 }
 
 const live = (over: Partial<GuardLive> = {}): GuardLive =>
-  ({ topic: TOPIC, provider: PROVIDER, paneOwned: async () => true, ...over });
+  ({ topic: TOPIC, provider: PROVIDER, paneLive: async () => true, ...over });
 
 async function capture<T>(fn: () => Promise<T>): Promise<{ value: T; err: string }> {
   const err: string[] = [];
@@ -164,14 +164,14 @@ describe("guardSkipped: the override needs all four evidence legs", () => {
 
   it("a dead pane → skip", async () => {
     seedEvidence();
-    const { value, err } = await runOpenqGuard(live({ paneOwned: async () => false }));
+    const { value, err } = await runOpenqGuard(live({ paneLive: async () => false }));
     expect(value).toBe(true);
     expect(err).toContain("pane %9 is gone");
   });
 
   it("a pane probe that throws (tmux server gone) counts as dead", async () => {
     seedEvidence();
-    const { value, err } = await runOpenqGuard(live({ paneOwned: async () => { throw new Error("no server"); } }));
+    const { value, err } = await runOpenqGuard(live({ paneLive: async () => { throw new Error("no server"); } }));
     expect(value).toBe(true);
     expect(err).toContain("pane %9 is gone");
   });
@@ -191,10 +191,10 @@ describe("guardSkipped: the override needs all four evidence legs", () => {
   it("a safe chain never probes and never flags", async () => {
     writeFileSync(join(h.home, "research-alpha.txt"), "OFFSET=0\nFS=ok\n");
     const busyState = vi.fn(() => "working");
-    const paneOwned = vi.fn(async () => true);
-    expect(await guardSkipped(row("openq"), h.home, AGENT, stateFile(), live({ busyState, paneOwned }))).toBe(false);
+    const paneLive = vi.fn(async () => true);
+    expect(await guardSkipped(row("openq"), h.home, AGENT, stateFile(), live({ busyState, paneLive }))).toBe(false);
     expect(busyState).not.toHaveBeenCalled();
-    expect(paneOwned).not.toHaveBeenCalled();
+    expect(paneLive).not.toHaveBeenCalled();
     expect(existsSync(stateFile())).toBe(false);
     expect(hubFlags()).toBe("");
   });
@@ -202,10 +202,10 @@ describe("guardSkipped: the override needs all four evidence legs", () => {
   it("the probes get the ids they expect: (agent, provider, topic) and the pane id + its nonce", async () => {
     seedEvidence();
     const busyState = vi.fn(() => null);
-    const paneOwned = vi.fn(async () => true);
-    await runOpenqGuard(live({ busyState, paneOwned }));
+    const paneLive = vi.fn(async () => true);
+    await runOpenqGuard(live({ busyState, paneLive }));
     expect(busyState).toHaveBeenCalledWith(AGENT, PROVIDER, TOPIC);
-    expect(paneOwned).toHaveBeenCalledWith("%9", "n9");   // ownership proof, not a bare id
+    expect(paneLive).toHaveBeenCalledWith("%9", "n9");   // ownership proof, not a bare id
   });
 });
 

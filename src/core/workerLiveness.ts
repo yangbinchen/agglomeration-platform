@@ -62,9 +62,10 @@ export function readWorkerStatusRec(dir: string): WorkerStatusRec | null {
   return { state: state ? state[1].trim() : "", lastEvent: last ? last[1].trim() : "" };
 }
 
-/** Every worker dir under `topic`, classified against ONE pane snapshot. The hub's own dir is
- *  excluded by name (`opts.exclude`) — its liveness is `classifyJobLiveness`'s job, and reporting it
- *  twice under two vocabularies is how two layers start disagreeing.
+/** Every worker dir under `topic`, classified against ONE pane snapshot — the ALIVE one
+ *  (`alivePaneNonces`), never the ownership map: a dead worker's pane lingers by `remain-on-exit`.
+ *  The hub's own dir is excluded by name (`opts.exclude`) — its liveness is `classifyJobLiveness`'s
+ *  job, and reporting it twice under two vocabularies is how two layers start disagreeing.
  *
  *  `persist` is the caller's choice because the counter is a RUNNING one: the `job` verbs that scan
  *  on a schedule (`status`, and `wait`'s mid-wait poll) advance it, while `ap list` — which an
