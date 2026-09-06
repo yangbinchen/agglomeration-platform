@@ -9952,8 +9952,8 @@ function manifestLines(j) {
       `simply not there \u2014 treat a file you cannot find as absent, not as a path to guess at.`,
       `A gitignored artifact the run needs (a compiled extension, a native build product) is rebuilt`,
       `HERE with the repo's own build command. The lasting repair is to declare it \u2014 a committed`,
-      `\`.ap-provision\` at the repo root listing that artifact's git pathspecs, one per line \u2014 so ap can`,
-      `provision it into the worktree once that support lands; name that in your handoff.`
+      `\`.ap-provision\` at the repo root listing that artifact's git pathspecs, one per line`,
+      `\u2014 and ap copies it into the worktree at the next launch; name that in your handoff.`
     ];
   }
   return [
@@ -10344,6 +10344,70 @@ function pinReport(root, target, home = (0, import_node_os4.homedir)(), env = pr
 }
 function pinFor(root, target, home, env) {
   return pinReport(root, target, home, env).pin;
+}
+function specProblem(spec) {
+  if (spec.startsWith("/")) return "an absolute path (the spec is repo-relative)";
+  if (spec.startsWith("-")) return "a leading '-' would be read by git as an option";
+  if (spec.startsWith(":")) return "pathspec magic (a leading ':') is not accepted";
+  if (spec.split("/").includes("..")) return "a '..' segment would place files outside the worktree";
+  return "";
+}
+function declaredPathspecs(root) {
+  let text;
+  try {
+    text = (0, import_node_fs14.readFileSync)((0, import_node_path11.join)(root, ".ap-provision"), "utf8");
+  } catch {
+    return { specs: [], rejected: [] };
+  }
+  const specs = [];
+  const rejected = [];
+  text.split("\n").forEach((raw, i) => {
+    const spec = raw.trim();
+    if (spec === "" || spec.startsWith("#")) return;
+    const reason = specProblem(spec);
+    if (reason) rejected.push({ line: i + 1, spec, reason });
+    else specs.push({ line: i + 1, spec });
+  });
+  return { specs, rejected };
+}
+function provisionDeclared(root, worktree, r) {
+  if (!(0, import_node_fs14.existsSync)((0, import_node_path11.join)(root, ".ap-provision"))) return { provisioned: [], warnings: [] };
+  const { specs, rejected } = declaredPathspecs(root);
+  const warnings = rejected.map((x) => `.ap-provision:${x.line} rejected: ${x.reason} (${x.spec})`);
+  const provisioned = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const { line, spec } of specs) {
+    const at = `.ap-provision:${line} (${spec})`;
+    const ls = r.run("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", spec, ":(exclude)node_modules", ":(exclude).ap"]);
+    if (ls.code !== 0) {
+      warnings.push(`${at}: enumeration failed (rc ${ls.code}) \u2014 nothing provisioned for this line`);
+      continue;
+    }
+    const paths = ls.stdout.split("\0").filter(Boolean);
+    if (!paths.length) {
+      warnings.push(`${at}: matched no gitignored file`);
+      continue;
+    }
+    for (const p of paths) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      const src = (0, import_node_path11.join)(root, p);
+      const dest = (0, import_node_path11.join)(worktree, p);
+      try {
+        (0, import_node_fs14.mkdirSync)((0, import_node_path11.dirname)(dest), { recursive: true });
+        (0, import_node_fs14.copyFileSync)(src, dest);
+        (0, import_node_fs14.chmodSync)(dest, (0, import_node_fs14.statSync)(src).mode & 4095);
+      } catch (e) {
+        warnings.push(`${at}: could not copy ${p} \u2014 ${e.message}`);
+        continue;
+      }
+      provisioned.push(p);
+      if (r.run("git", ["-C", worktree, "check-ignore", "-q", "--", p]).code !== 0) {
+        warnings.push(`${p} is not gitignored in the worktree and will show up in the run's diff`);
+      }
+    }
+  }
+  return { provisioned, warnings };
 }
 var import_node_fs14, import_node_os4, import_node_path11, under, shadows, UNSAFE, NO_PIN;
 var init_provision = __esm({
@@ -15814,7 +15878,14 @@ function provisionWorktree(root, worktree, r, envDeps = realEnvDeps()) {
     if (mode) log.ok(`job start: ${mode} node_modules into the worktree`);
     else log.warn(`job start: could not clone node_modules into ${worktree} (cp -al, -cR and -R all failed) \u2014 the worker will have to install dependencies itself`);
   }
-  return reportShadows(root, worktree, envDeps);
+  const dec = provisionDeclared(root, worktree, r);
+  for (const w of dec.warnings) log.warn(`job start: ${w}`);
+  if (dec.provisioned.length) {
+    const shown = dec.provisioned.slice(0, 10);
+    const more = dec.provisioned.length - shown.length;
+    log.ok(`job start: provisioned ${dec.provisioned.length} declared gitignored artifact(s) into the worktree: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`);
+  }
+  return { ...reportShadows(root, worktree, envDeps), provisioned: dec.provisioned };
 }
 function startWorktree(root, topic, r, envDeps = realEnvDeps()) {
   const head = r.run("git", ["rev-parse", "HEAD"]);
@@ -16082,7 +16153,8 @@ async function startRun(rest, origCwd, deps = realEnvDeps()) {
     origin_session: originSession,
     // Omitted when empty, never written as [] / "": a clean-box record stays byte-identical (A5).
     ...wt?.shadows.length ? { python_shadow: wt.shadows } : {},
-    ...wt?.pin ? { python_pin: wt.pin } : {}
+    ...wt?.pin ? { python_pin: wt.pin } : {},
+    ...wt?.provisioned.length ? { provisioned: wt.provisioned } : {}
   };
   (0, import_node_fs40.mkdirSync)(jobDir(topic), { recursive: true });
   atomicWrite(jobPath(topic), formatJob(rec));

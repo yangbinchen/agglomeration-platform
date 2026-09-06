@@ -24,6 +24,12 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 The most recent releases, newest first. Every entry has a dated design record under
 `docs/superpowers/specs/`; the full history is `git log`.
 
+- **0.5.86 — 2026-09-06 · `.ap-provision`.** A repo commits `.ap-provision` at its root, one git
+  pathspec per line, and every ap worktree — a detached run's and each slice worker's — receives the
+  gitignored artifacts it names, copied from the main checkout at launch: enumerated per line with
+  `git ls-files --others --ignored --exclude-standard`, so only ignored files ever cross; a copy, never
+  a hardlink; every path named on stderr. The second half of the worktree-parity design, unblocked by
+  its first dogfood.
 - **0.5.85 — 2026-09-06 · Detached `implement`: the job hub's own rules.** The waits, the relay,
   the park, the sends and every rc-bearing verb are the hub's own turn; a slice's claim check runs
   inside that slice's worktree; one park at a time, so a second question is never swallowed by the
@@ -286,8 +292,16 @@ The unattended envelope is deliberately tighter than an attended run:
   - *Python repos:* if a user-site `.pth` or an editable install resolves the repo from your main
     checkout, `job start` says so and pins `PYTHONPATH` to the worktree for the worker's pane and
     for the hub's own test re-run, and the brief tells the hub to prefix the same pin on anything it
-    runs itself. Gitignored build products still do not come across — the brief says to rebuild
+    runs itself. Undeclared gitignored build products do not come across — the brief says to rebuild
     them in the worktree — and `job stop` keeps a worktree an editable install has been pointed at.
+  - *Gitignored build products:* commit a `.ap-provision` at the repo root — one git pathspec per
+    line, `#` comments allowed — naming the ignored artifacts a run needs (a compiled extension, a
+    native build product). At launch ap enumerates each line with `git ls-files --others --ignored
+    --exclude-standard`, so only gitignored files ever cross — never a tracked file, never your
+    uncommitted work — and copies them into the worktree (a copy, not a hardlink, so an in-place
+    rebuild there cannot write through into your checkout). Every provisioned path is named on
+    stderr; a line that matches nothing, is rejected, or fails to enumerate warns and provisions
+    nothing.
 - **An `implement` job fans out when the plan allows it.** The lead writes `plan.md` with a Slices
   proposal, the job hub groups the tasks (up to 6 slices; there is no flag and no worker count to
   choose), and each slice implements its own tasks in its own worktree at

@@ -614,8 +614,8 @@ function manifestLines(j: JobRecord): string[] {
       `simply not there — treat a file you cannot find as absent, not as a path to guess at.`,
       `A gitignored artifact the run needs (a compiled extension, a native build product) is rebuilt`,
       `HERE with the repo's own build command. The lasting repair is to declare it — a committed`,
-      `\`.ap-provision\` at the repo root listing that artifact's git pathspecs, one per line — so ap can`,
-      `provision it into the worktree once that support lands; name that in your handoff.`,
+      `\`.ap-provision\` at the repo root listing that artifact's git pathspecs, one per line`,
+      `— and ap copies it into the worktree at the next launch; name that in your handoff.`,
     ];
   }
   return [

@@ -29,9 +29,10 @@
 // top-level name (`types.py`, `select.py`) shadows it for every interpreter in the pane. Checked
 // clean for the dogfood repo; written down rather than discovered later.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { type Runner } from "./gitwork.js";
 import { pathTokensFrom } from "./implementScope.js";
 import { worktreeProvenanced } from "./job.js";
 
@@ -211,4 +212,91 @@ export function pinReport(root: string, target: string, home: string = homedir()
 /** The pin string alone — `""` means "apply nothing", byte-identical to today at every site. */
 export function pinFor(root: string, target: string, home?: string, env?: NodeJS.ProcessEnv): string {
   return pinReport(root, target, home, env).pin;
+}
+
+// ---------- `.ap-provision`: the gitignored artifacts a repo declares (A11/A12) ----------
+
+/** One accepted line of `.ap-provision`, with the 1-based line number every warning is attributed to
+ *  — a single git call for all the specs could not say which line matched nothing. */
+export interface DeclaredSpec { line: number; spec: string; }
+export interface RejectedSpec extends DeclaredSpec { reason: string; }
+
+/** Why git must never be handed this spec, or "" when it is fine. A committed file steers where files
+ *  land in a directory an autonomous TUI works in, so this is validation at a trust boundary: `..`
+ *  would place a copy outside the worktree, a leading `-` is read by git as an option, and `:` opens
+ *  pathspec magic (`:(exclude)`, `:/`) that re-anchors the match outside the declaring repo's frame. */
+function specProblem(spec: string): string {
+  if (spec.startsWith("/")) return "an absolute path (the spec is repo-relative)";
+  if (spec.startsWith("-")) return "a leading '-' would be read by git as an option";
+  if (spec.startsWith(":")) return "pathspec magic (a leading ':') is not accepted";
+  if (spec.split("/").includes("..")) return "a '..' segment would place files outside the worktree";
+  return "";
+}
+
+/** The pathspecs a repo declares at `<root>/.ap-provision`: one per line, `#` comments and blanks
+ *  skipped, surrounding whitespace trimmed. No file is `{ specs: [], rejected: [] }` — the opt-in
+ *  default, and the whole layer's silence on a clean repo. */
+export function declaredPathspecs(root: string): { specs: DeclaredSpec[]; rejected: RejectedSpec[] } {
+  let text: string;
+  try { text = readFileSync(join(root, ".ap-provision"), "utf8"); } catch { return { specs: [], rejected: [] }; }
+  const specs: DeclaredSpec[] = [];
+  const rejected: RejectedSpec[] = [];
+  text.split("\n").forEach((raw, i) => {
+    const spec = raw.trim();
+    if (spec === "" || spec.startsWith("#")) return;
+    const reason = specProblem(spec);
+    if (reason) rejected.push({ line: i + 1, spec, reason });
+    else specs.push({ line: i + 1, spec });
+  });
+  return { specs, rejected };
+}
+
+/** Copy every declared gitignored artifact from the MAIN checkout into a freshly-added worktree.
+ *
+ *  Enumeration is ONE `git ls-files` per declared line, on the root-bound runner: only that shape can
+ *  attribute "matched nothing" to a line, and re-deriving the attribution would mean re-implementing
+ *  git's matcher. `--others --ignored --exclude-standard` is what makes this structurally safe — no
+ *  tracked file and none of the operator's uncommitted work can ever cross — and the two `:(exclude)`
+ *  specs keep a `.` declaration from dragging `node_modules` (already cloned) and `.ap` (the state
+ *  root, which holds this very worktree) along. rc != 0 is fail-closed: a truncated or failed
+ *  enumeration provisions NOTHING for that line rather than reading as zero-match.
+ *
+ *  Placement is a COPY, never a hardlink: the field runs `setup.py build_ext --inplace` inside the
+ *  worktree, and a hardlink is not copy-on-write, so an in-place rebuild would write through into the
+ *  operator's own checkout — the one thing the brief promises ap will not touch. The mode is carried
+ *  across because a build product is often executable.
+ *
+ *  Every failure is non-fatal and returned as a warning, like the node_modules chain. */
+export function provisionDeclared(root: string, worktree: string, r: Runner): { provisioned: string[]; warnings: string[] } {
+  if (!existsSync(join(root, ".ap-provision"))) return { provisioned: [], warnings: [] };
+  const { specs, rejected } = declaredPathspecs(root);
+  const warnings = rejected.map((x) => `.ap-provision:${x.line} rejected: ${x.reason} (${x.spec})`);
+  const provisioned: string[] = [];
+  const seen = new Set<string>();
+  for (const { line, spec } of specs) {
+    const at = `.ap-provision:${line} (${spec})`;
+    const ls = r.run("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", spec, ":(exclude)node_modules", ":(exclude).ap"]);
+    if (ls.code !== 0) { warnings.push(`${at}: enumeration failed (rc ${ls.code}) — nothing provisioned for this line`); continue; }
+    const paths = ls.stdout.split("\0").filter(Boolean);
+    if (!paths.length) { warnings.push(`${at}: matched no gitignored file`); continue; }
+    for (const p of paths) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      const src = join(root, p);
+      const dest = join(worktree, p);
+      try {
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(src, dest);
+        chmodSync(dest, statSync(src).mode & 0o7777);
+      } catch (e) { warnings.push(`${at}: could not copy ${p} — ${(e as Error).message}`); continue; }
+      provisioned.push(p);
+      // The worktree's committed `.gitignore` and the main checkout's working-tree one can differ, and
+      // an unignored provisioned file would keep the worktree on every `job stop` and surface in the
+      // run's diff. The path stays provisioned — the operator's uncommitted ignore rule is the cause.
+      if (r.run("git", ["-C", worktree, "check-ignore", "-q", "--", p]).code !== 0) {
+        warnings.push(`${p} is not gitignored in the worktree and will show up in the run's diff`);
+      }
+    }
+  }
+  return { provisioned, warnings };
 }

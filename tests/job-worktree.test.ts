@@ -940,6 +940,161 @@ describe("job start — an invisible design doc is refused before anything is cr
 
 // ---------------------------------------------------------------- the slice layer (design C / I)
 
+// The one path by which UNTRACKED operator files enter a worktree (A11/A12). Everything here is real
+// git: what `--others --ignored --exclude-standard` will and will not hand over is the whole safety
+// argument, so a stub of it would be testing the stub.
+describe("job start — the gitignored artifacts a repo DECLARES are copied into the worktree", () => {
+  // The agent pool `start` picks from must stay findable once the cwd is a throwaway repo; captured
+  // at collection time, when the cwd is this checkout.
+  const PLUGIN_ROOT = process.cwd();
+  /** A fresh HOME with no site dir at all, so the shadow scan stays silent and stderr is only ours. */
+  function noSite(): EnvDeps {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "ap-decl-home-")));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    return { home, env: {} as NodeJS.ProcessEnv };
+  }
+  /** `.gitignore` (`*.so`) + a committed `pkg/mod.py` + a committed `.ap-provision` naming `pkg`,
+   *  then the ignored `pkg/_ext.so` and an untracked-but-NOT-ignored `pkg/notes.txt` (the operator's
+   *  WIP, which must never cross). `ignoreCommitted: false` leaves the ignore rule uncommitted, so
+   *  the worktree that forks HEAD does not have it. */
+  function declaredRepo(opts: { spec?: string; ignoreCommitted?: boolean } = {}): string {
+    const root = repo();
+    mkdirSync(join(root, "pkg"), { recursive: true });
+    writeFileSync(join(root, "pkg", "mod.py"), "committed\n");
+    writeFileSync(join(root, ".ap-provision"), `${opts.spec ?? "pkg"}\n`);
+    if (opts.ignoreCommitted !== false) writeFileSync(join(root, ".gitignore"), "*.so\n");
+    git(root, "add", "-A"); git(root, "commit", "-q", "-m", "declare");
+    if (opts.ignoreCommitted === false) writeFileSync(join(root, ".gitignore"), "*.so\n");
+    writeFileSync(join(root, "pkg", "_ext.so"), "BINARY");
+    writeFileSync(join(root, "pkg", "notes.txt"), "my wip\n");
+    return root;
+  }
+  /** The REAL git runner with only `git ls-files` scripted, keyed by the SPEC each call carries —
+   *  a spec with no scripted answer falls through to real git. `cpScripted`'s shape, one layer down. */
+  function lsScripted(root: string, answers: Record<string, { code: number; stdout: string }>): { r: Runner; calls: string[][] } {
+    const real = runnerAt(root);
+    const calls: string[][] = [];
+    const r: Runner = {
+      run(cmd, args) {
+        if (cmd !== "git" || args[0] !== "ls-files") return real.run(cmd, args);
+        calls.push(args);
+        return answers[args[args.indexOf("--") + 1] ?? ""] ?? real.run(cmd, args);
+      },
+    };
+    return { r, calls };
+  }
+
+  it("copies the declared ignored file in, NAMES it, and leaves the operator's tracked and untracked work behind", async () => {
+    const root = declaredRepo();
+    writeFileSync(join(root, "pkg", "mod.py"), "uncommitted edit\n");      // tracked-dirty WIP
+    let out: ReturnType<typeof startWorktree> = null;
+    const { rc, err } = await capture(() => { out = startWorktree(root, TOPIC, runnerAt(root), noSite()); return out ? 0 : 1; });
+    const wt = worktreePathFor(root, TOPIC);
+    expect(rc).toBe(0);
+    expect(out!.provisioned).toEqual(["pkg/_ext.so"]);
+    expect(readFileSync(join(wt, "pkg", "_ext.so"), "utf8")).toBe("BINARY");
+    // A COPY, never a hardlink: the field rebuilds in place inside the worktree, and a hardlink
+    // would write that build through into the operator's own checkout.
+    expect(statSync(join(wt, "pkg", "_ext.so")).ino).not.toBe(statSync(join(root, "pkg", "_ext.so")).ino);
+    // WHICH file crossed, not how many: `--others --ignored` is where `.env` lives.
+    expect(err).toContain("pkg/_ext.so");
+    expect(err).toContain("job start: provisioned 1 declared gitignored artifact(s) into the worktree: pkg/_ext.so");
+    // Nothing untracked-but-unignored, and the tracked file is the COMMITTED text.
+    expect(existsSync(join(wt, "pkg", "notes.txt"))).toBe(false);
+    expect(readFileSync(join(wt, "pkg", "mod.py"), "utf8")).toBe("committed\n");
+    expect(out!.provisioned).not.toContain("pkg/mod.py");
+    // The worktree ignores it too, so nothing warns and `job stop` can still sweep the tree.
+    expect(err).not.toContain("will show up in the run's diff");
+  });
+
+  it("a `.` declaration takes neither .ap nor node_modules — the two the launch already owns", async () => {
+    const root = repo();
+    writeFileSync(join(root, ".gitignore"), "*.so\n.ap/\n");
+    writeFileSync(join(root, ".ap-provision"), ".\n");
+    mkdirSync(join(root, "pkg"), { recursive: true });
+    git(root, "add", "-A"); git(root, "commit", "-q", "-m", "declare");
+    for (const p of [join(root, "pkg", "_ext.so"), join(root, ".ap", "x", "g.so"), join(root, "node_modules", "a", "f.so")]) {
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, "BINARY");
+    }
+    let out: ReturnType<typeof startWorktree> = null;
+    await capture(() => { out = startWorktree(root, TOPIC, runnerAt(root), noSite()); return out ? 0 : 1; });
+    expect(out!.provisioned).toEqual(["pkg/_ext.so"]);
+  });
+
+  it("one `ls-files` per declared line: a failed enumeration provisions NOTHING for its line, a zero-match warns, and the launch still succeeds", async () => {
+    const root = repo();
+    writeFileSync(join(root, ".gitignore"), "*.so\n");
+    writeFileSync(join(root, ".ap-provision"), "a\nb\nc\n");
+    mkdirSync(join(root, "a"), { recursive: true });
+    git(root, "add", "-A"); git(root, "commit", "-q", "-m", "declare");
+    writeFileSync(join(root, "a", "x.so"), "BINARY");
+    const { r, calls } = lsScripted(root, { b: { code: 128, stdout: "" }, c: { code: 0, stdout: "" } });
+    let out: ReturnType<typeof startWorktree> = null;
+    const { rc, err } = await capture(() => { out = startWorktree(root, TOPIC, r, noSite()); return out ? 0 : 1; });
+    expect(rc).toBe(0);
+    expect(out!.provisioned).toEqual(["a/x.so"]);
+    expect(existsSync(join(worktreePathFor(root, TOPIC), "a", "x.so"))).toBe(true);
+    // rc != 0 is fail-closed — a truncated or failed enumeration is never read as "matched nothing".
+    expect(err).toContain(".ap-provision:2 (b): enumeration failed (rc 128) — nothing provisioned for this line");
+    expect(err).toContain(".ap-provision:3 (c): matched no gitignored file");
+    // One call per line, each carrying its OWN spec: folded into one call, no warning could name a line.
+    expect(calls).toHaveLength(3);
+    expect(calls.map((a) => a[a.indexOf("--") + 1])).toEqual(["a", "b", "c"]);
+    for (const spec of ["a", "b", "c"]) {
+      expect(calls.find((a) => a.includes(spec))).toEqual(
+        ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", spec, ":(exclude)node_modules", ":(exclude).ap"]);
+    }
+  });
+
+  it("a rejected line warns by number and provisions nothing for it, while the good lines still land", async () => {
+    const root = declaredRepo({ spec: "../outside\npkg" });
+    let out: ReturnType<typeof startWorktree> = null;
+    const { err } = await capture(() => { out = startWorktree(root, TOPIC, runnerAt(root), noSite()); return out ? 0 : 1; });
+    expect(out!.provisioned).toEqual(["pkg/_ext.so"]);
+    expect(err).toContain(".ap-provision:1 rejected:");
+    expect(err).toContain("(../outside)");
+  });
+
+  // main's working-tree `.gitignore` and the worktree's COMMITTED one can differ; an unignored
+  // provisioned file would keep the worktree on every `job stop` and surface in the run's diff.
+  it("warns when the WORKTREE does not ignore a path it was handed — and keeps it provisioned", async () => {
+    const root = declaredRepo({ ignoreCommitted: false });
+    let out: ReturnType<typeof startWorktree> = null;
+    const { err } = await capture(() => { out = startWorktree(root, TOPIC, runnerAt(root), noSite()); return out ? 0 : 1; });
+    expect(out!.provisioned).toEqual(["pkg/_ext.so"]);
+    expect(existsSync(join(worktreePathFor(root, TOPIC), "pkg", "_ext.so"))).toBe(true);
+    expect(err).toContain("pkg/_ext.so is not gitignored in the worktree and will show up in the run's diff");
+  });
+
+  // Success criterion 1 again, from the other side: an undeclared repo makes no git call at all.
+  it("silence on a repo with no .ap-provision: no ls-files call is made and nothing is printed", async () => {
+    const root = repo();
+    const { r, calls } = lsScripted(root, {});
+    const { rc, err } = await capture(() => (startWorktree(root, TOPIC, r, noSite()) ? 0 : 1));
+    expect(rc).toBe(0);
+    expect(calls).toEqual([]);
+    expect(err).not.toContain("provisioned");
+    expect(err).not.toContain(".ap-provision");
+  });
+
+  it("the record carries the provisioned paths, and a clean launch's record has no such key", async () => {
+    const root = declaredRepo();
+    const argsFile = join(mkdtempSync(join(tmpdir(), "ap-args-")), "args");
+    writeFileSync(argsFile, "fix the thing");
+    const saved = process.env.CLAUDE_PLUGIN_ROOT;
+    process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
+    try {
+      const { rc } = await capture(() => startRun(["--command", "quick", "--args-file", argsFile, "--topic", TOPIC], root, noSite()));
+      expect(rc).toBe(1);                                  // the tmux shim fails the spawn, not the launch
+      expect(parseJob(readFileSync(jobPath(TOPIC), "utf8"))!.provisioned).toEqual(["pkg/_ext.so"]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_PLUGIN_ROOT;
+      else process.env.CLAUDE_PLUGIN_ROOT = saved;
+    }
+  });
+});
+
 describe("provisionWorktree — the run tree and a slice tree are provisioned by ONE helper", () => {
   it("clones node_modules and reports the shadow, exactly as startWorktree's inline steps did", async () => {
     const root = repo();
@@ -947,12 +1102,12 @@ describe("provisionWorktree — the run tree and a slice tree are provisioned by
     const slice = sliceWorktreePathFor(root, TOPIC, "bravo");
     mkdirSync(slice, { recursive: true });
     const { r, calls } = cpScripted(root, [0]);
-    const out = { shadows: [] as string[], pin: "" };
+    const out = { shadows: [] as string[], pin: "", provisioned: [] as string[] };
     const { err } = await capture(() => { Object.assign(out, provisionWorktree(root, slice, r)); return 0; });
     expect(calls).toEqual([["-al", join(root, "node_modules"), join(slice, "node_modules")]]);
     expect(err).toContain("hardlink-cloned node_modules into the worktree");
     // a clean box pins nothing, and the shape is the one startWorktree spreads into the record
-    expect(out).toEqual({ shadows: [], pin: "" });
+    expect(out).toEqual({ shadows: [], pin: "", provisioned: [] });
   });
 
   // The byte-identity guard for the RUN tree: startWorktree now calls the helper, and every
@@ -965,6 +1120,23 @@ describe("provisionWorktree — the run tree and a slice tree are provisioned by
     const { err } = await capture(() => (startWorktree(root, TOPIC, r) ? 0 : 1));
     expect(calls.map((a) => a[0])).toEqual(["-al", "-cR"]);
     expect(err).toContain("job start: clone-copied node_modules into the worktree");
+  });
+
+  // A slice tree runs the same build as the run tree does, so it needs the same declared artifacts;
+  // a second implementation is how the two start differing on the box where it matters.
+  it("a SLICE worktree gets the declared gitignored artifacts too", async () => {
+    const root = repo();
+    writeFileSync(join(root, ".gitignore"), "*.so\n");
+    writeFileSync(join(root, ".ap-provision"), "pkg\n");
+    mkdirSync(join(root, "pkg"), { recursive: true });
+    git(root, "add", "-A"); git(root, "commit", "-q", "-m", "declare");
+    writeFileSync(join(root, "pkg", "_ext.so"), "BINARY");
+    const slice = sliceWorktreePathFor(root, TOPIC, "bravo");
+    mkdirSync(slice, { recursive: true });
+    let out = { provisioned: [] as string[] };
+    await capture(() => { out = provisionWorktree(root, slice, runnerAt(root)); return 0; });
+    expect(out.provisioned).toEqual(["pkg/_ext.so"]);
+    expect(readFileSync(join(slice, "pkg", "_ext.so"), "utf8")).toBe("BINARY");
   });
 });
 
