@@ -24,6 +24,11 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 The most recent releases, newest first. Every entry has a dated design record under
 `docs/superpowers/specs/`; the full history is `git log`.
 
+- **0.5.90 — 2026-09-06 · grep gates mean removal.** Every quick and bridge worker prompt now states
+  that a grep-shaped acceptance check is met by removing what the pattern names, never by respelling
+  or splitting a token, and that a token which must stay is reported as a gate conflict; quick's
+  brief rule asks the hub to state expected remaining matches instead of `returns nothing` when the
+  pattern overlaps an identifier that stays. Closes #211.
 - **0.5.89 — 2026-09-06 · scope paths as designs write them.** `implement scope-check` matches a
   Components or Testing path written absolute under the target or the main checkout by its
   repo-relative form (`SCOPE_RELATIVIZED=`), so an absolute-citation design no longer reads as a
@@ -612,7 +617,7 @@ There are **two roots**:
 
 ```
 npm run typecheck   # tsc --noEmit
-npm run test        # vitest run   (3,390 tests)
+npm run test        # vitest run   (3,394 tests)
 npm run lint        # eslint
 npm run build       # esbuild -> dist/ap.cjs  (commit the result)
 ```

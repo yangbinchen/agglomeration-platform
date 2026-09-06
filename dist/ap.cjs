@@ -12216,7 +12216,7 @@ var init_turn = __esm({
   "src/core/turn.ts"() {
     "use strict";
     BRANCH_DISCIPLINE = 'BRANCH DISCIPLINE (hard rule):\n- You are already on the correct branch. Do NOT run `git checkout`, `git switch`,\n  or `git branch`, and do NOT create new branches.\n- If the work genuinely needs a different branch, do NOT switch; instead emit\n  {"event":"error","reason":"branch-discipline: needed a different branch"} and stop.\n';
-    BLOCKERS = 'IF YOU ARE BLOCKED:\n- If a path, file, command, or assumption is wrong or missing, do NOT guess or invent a\n  workaround. Append a question event to your outbox and stop:\n  {"event":"question","message":"<what you need and why>","ts":"<iso>"}\n  The conductor will reply via your inbox, then re-engage you.\n';
+    BLOCKERS = 'IF YOU ARE BLOCKED:\n- If a path, file, command, or assumption is wrong or missing, do NOT guess or invent a\n  workaround. Append a question event to your outbox and stop:\n  {"event":"question","message":"<what you need and why>","ts":"<iso>"}\n- An acceptance check shaped as a grep (a pattern that must return nothing) is met by REMOVING what\n  the pattern names, never by respelling, splitting, or otherwise hiding a token from it. A token that\n  must stay is a gate conflict: report it with the same question event and leave the token alone.\n  The conductor will reply via your inbox, then re-engage you.\n';
   }
 });
 

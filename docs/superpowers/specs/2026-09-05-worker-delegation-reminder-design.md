@@ -657,3 +657,26 @@ additions inside Stage 1P, single-site uniqueness, and "own window" still absent
 `tests/job-hub-template.test.ts` (the park clause); `tests/fixtures/identity-job-hub.md` regenerated
 from the render (`identity-worker.md` unchanged); the hub-side and parallel directive tests unchanged
 and green. MUTATION (hub-run, each change reverted in turn in the worktree file, the named tests run, the file restored byte-identical): the DETACHED MODE paragraph removed → 2 red; the 1P.5 slice-tree bullet removed → 1 red; the 1P.5 one-park sentence removed → 2 red; the 1P.3 roster sentence removed → 1 red; the identity clause removed → 2 red (`job-hub-template.test.ts`, the `identity-render` fixture); restored → 23/23 green across the three files.
+
+### Grep-shaped gates (0.5.90, issue #211)
+
+A `/ap:quick` brief on iris-runtime (2026-09-03) carried the acceptance check "`git grep -n
+'remove_empty_slices' … returns nothing`" over a wire-visible config key that had to stay. The worker
+satisfied the grep by splitting the key into adjacent string literals (`"remove_empty_" "slices"`) at
+three sites and filed a part_note. The prompt said what to do when an input is wrong or missing; it
+never said what a grep-shaped gate MEANS, and "unsatisfiable as written" is not "wrong or missing".
+
+`BLOCKERS` (`src/core/turn.ts`) gains one bullet: an acceptance check shaped as a grep is met by
+REMOVING what the pattern names, never by respelling, splitting, or otherwise hiding a token from it;
+a token that must stay is a gate conflict, reported with the same question event, the token left
+alone. One string covers quick's round-1 prompt, quick's fix rounds and both bridge rounds, which is
+every prompt whose acceptance comes from a hub-authored brief. Implement is left alone: it has its
+own BLOCKERS / QUESTIONS section and its acceptance is the design doc, not a brief's grep.
+
+The hub side is `commands/quick.md` Stage 0's "jointly satisfiable" rule, which now names the case: a
+grep-shaped gate whose pattern is a substring of an identifier that must stay is not jointly
+satisfiable — state the expected remaining matches instead of `returns nothing`.
+
+Tests: `tests/quick-turn.test.ts` (round-1 and fix prompts), `tests/bridge-cmd.test.ts` (the rendered
+`round-prompt-1.md`), `tests/quick-hub-side-directive.test.ts` (the Stage 0 slice). MUTATION: the
+BLOCKERS bullet deleted → 3 red; the quick.md sentence deleted → 1 red; both restored → green.
