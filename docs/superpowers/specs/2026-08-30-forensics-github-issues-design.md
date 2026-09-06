@@ -197,7 +197,7 @@ constant in `src/core/review.ts`. Closing stays the maintainer's call (`gh issue
 `review consent yes|no` — §G. `review flush` — §C.
 
 The directive (`commands/review.md`) rewritten: consent check → survey → read each issue
-(`gh issue view <n> --repo <R> --comments`) → cluster → per cluster one action and the hand-off
+(`gh issue view <n> --repo <R> --json number,title,body,comments --jq <render>`) → cluster → per cluster one action and the hand-off
 `/ap:quick "<fix>. Closes #<n>"` (or `/ap:implement` when it needs a spec) → present → archive the
 reviewed numbers. The remote-box ssh pull is dropped (every box files its own issues).
 
@@ -341,3 +341,18 @@ the same slug opens a second issue; then the same on xjp.
   crash-after-success duplicate comment are accepted.
 - Fixing `archive.ts:74`'s `rmSync(td, { recursive: false })` (throws EISDIR even on an empty topic
   dir — pre-existing, out of scope).
+
+## Amendments
+
+### The read step uses `--json` (0.5.88, 2026-09-06)
+
+The directive's step 4 shipped as `gh issue view <n> --repo <R> --comments`. On gh 2.45.0, the release
+Ubuntu packages and every box in the fleet runs, that form and the plain `gh issue view <n>` both fail
+with `GraphQL: Projects (classic) is being deprecated ... (repository.issue.projectCards)`: the
+human-readable view still queries the retired Projects (classic) fields. The two triage runs of
+2026-09-06 read the issues through `gh api repos/<R>/issues/<n>` by hand instead. The step now uses
+`gh issue view <n> --repo <R> --json number,title,body,comments` with a `--jq` render of the title,
+the body and each comment in order; `--json` requests only the fields it names, so it works on every
+gh release, and the verb stays `gh issue view` (the directive test's `--repo` check covers it). The
+verbs the platform runs itself (`review survey`, `review archive`, the forensics filing) never used
+the failing form and are unchanged.

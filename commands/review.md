@@ -51,8 +51,11 @@ Let `CS="node ${CLAUDE_PLUGIN_ROOT}/dist/ap.cjs"`.
    Nothing to read, nothing to archive.
 
 4. **Read the issues.** For each surveyed number:
-   `gh issue view <n> --repo WingsOfPanda/agglomeration-platform --comments`
-   (batch them into one Bash call with `---SEP---` separators). The body carries the run metadata
+   `gh issue view <n> --repo WingsOfPanda/agglomeration-platform --json number,title,body,comments --jq '"#\(.number) \(.title)\n\(.body)\n" + ([.comments[] | "--- comment \(.createdAt) \(.author.login) ---\n\(.body)"] | join("\n"))'`
+   (batch them into one Bash call with `---SEP---` separators). Always this `--json` form: the plain
+   and `--comments` forms of the view command fail on gh releases that still query Projects (classic)
+   (`GraphQL: Projects (classic) is being deprecated ... (repository.issue.projectCards)`), while
+   `--json` requests only the fields it names. The body carries the run metadata
    block — ap version, command, topic, host/user, platform, providers, repo, art dir — and the
    comments carry the flags, the mechanical findings and the hub's reflection.
 

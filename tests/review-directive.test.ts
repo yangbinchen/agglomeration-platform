@@ -97,7 +97,10 @@ describe("review.md — triage over issues", () => {
     }
   });
   it("reads issues, clusters, hands off with Closes #n, then labels triaged", () => {
-    expect(md).toContain("gh issue view <n> --repo WingsOfPanda/agglomeration-platform --comments");
+    expect(md).toContain("gh issue view <n> --repo WingsOfPanda/agglomeration-platform --json number,title,body,comments --jq");
+    // gh 2.45 (Ubuntu's packaged release) fails the plain and --comments forms with a Projects (classic)
+    // GraphQL error; only the --json form, which requests just the named fields, works everywhere.
+    expect(md).not.toContain("--repo WingsOfPanda/agglomeration-platform --comments");
     expect(md).toContain("Closes #");
     expect(md).toContain("/ap:quick");
     expect(md).toContain("/ap:implement");
