@@ -24,6 +24,10 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 The most recent releases, newest first. Every entry has a dated design record under
 `docs/superpowers/specs/`; the full history is `git log`.
 
+- **0.5.88 — 2026-09-06 · `/ap:review` reads issues with `--json`.** The triage directive's read step
+  used `gh issue view --comments`, which fails on gh releases that still query Projects (classic)
+  (gh 2.45, the release Ubuntu packages); it now uses `--json number,title,body,comments` with a
+  `--jq` render, which requests only the fields it names and works on every gh release.
 - **0.5.87 — 2026-09-06 · parked stays parked.** A detached job hub's `progress` heartbeat while it
   waits on an operator question no longer un-parks the question: `job relay` accepts while nothing but
   progress follows it, `job status`/`attach` keep `PARKED=yes`, and a heartbeat logged after the relay
