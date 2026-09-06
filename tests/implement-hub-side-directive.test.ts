@@ -36,3 +36,12 @@ describe("implement.md attached hub side: the hub's own delegation split", () =>
     expect(before2).not.toContain("never off a subagent's summary");
   });
 });
+
+describe("implement.md Stage 2: a deferred success criterion is outside this run's acceptance", () => {
+  it("Step B says so before the hub writes the verdict (0.5.92, issue #222)", () => {
+    expect(stepB).toContain("[deferred: <run>]` is outside this run's acceptance: never a `[spec-gap]`, never a FAIL.");
+    const sentence = stepB.indexOf("A Success Criteria bullet the design tags");
+    expect(sentence).toBeGreaterThan(-1);
+    expect(sentence).toBeLessThan(stepB.indexOf("Write the verdict to `$ART/cross-verify-<ROUND>.md`"));
+  });
+});

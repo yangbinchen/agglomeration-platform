@@ -871,6 +871,9 @@ a `[bug]` ("gate added without mutation evidence") instead of counting it. Recor
 `$ART/cross-verify-<ROUND>.md` as one line — `NEW_GATES=<n> MUTATION_LINES=<n>` — so `/ap:review` can
 trend the ratio across runs instead of re-reading reports.
 
+A Success Criteria bullet the design tags `[deferred: <run>]` is outside this run's acceptance:
+never a `[spec-gap]`, never a FAIL.
+
 Write the verdict to `$ART/cross-verify-<ROUND>.md`: top line `VERDICT: PASS` or `VERDICT: FAIL`. On
 FAIL, list issues under `## Issues`, each tagged `[bug]` / `[regression]` / `[spec-gap]` with a
 `(file:line)` reference and a one-line fix direction. The spot-checked hunks you cite as

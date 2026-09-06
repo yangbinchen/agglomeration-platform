@@ -126,6 +126,14 @@ tool** (atomic single-shot writes), one file per section:
   the files it covers surface as out-of-scope at Stage 4. `implement audit` warns `<n> of <m> Testing
   bullets declare no path`, so the gap is visible before a worker is spawned.
 - `.draft/success-criteria.md` → `## Success Criteria` + measurable bullets. *(required)*
+  **A criterion whose measurement needs anything beyond this run's own seat and the checkout it
+  stands in says so on the same line** — `` - <criterion> (measured: <seat>, <data>) `` — and you
+  confirmed that seat and that data are reachable from this run's checkout today (count a population
+  the way `components` stats its paths). A criterion only another box, a merged-main SHA, or an
+  unstaged population can produce is **unreachable by construction**; the implementing worker meets
+  it as a first-turn objection and it costs a round. Tag it **`[deferred: <named later run>]`** on
+  the same line: it is not part of this run's acceptance and never a blocker for the run this doc
+  feeds. A criterion measured by this seat's own test suite on the checkout needs no annotation.
 
 Each section body should cite sources inline where applicable (`path/to/file:line`, URLs, runtime
 observations). Every `path:line`, URL or runtime observation the doc cites, you opened or observed
@@ -353,6 +361,11 @@ so keep handling / relay and re-run. Only on rc 0 continue.
      this design CREATES is labelled `(new — does not exist yet)` on the same line (the label
      `/ap:implement` and `/ap:quick` already mandate); that label exempts the line from the existence
      check.
+   - **success-criteria**, additionally: a criterion needing more than this run's seat and checkout
+     carries `(measured: <seat>, <data>)` and you confirmed both resolve from this run's checkout;
+     one this run cannot measure is tagged `[deferred: <named later run>]` and is outside this run's
+     acceptance. Confirming a population may be a subagent's; the seat you name you checked yourself
+     in this turn.
 
 ## Stage 11 — assemble + deploy-audit gate (retry loop)
 

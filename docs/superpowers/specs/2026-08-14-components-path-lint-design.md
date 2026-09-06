@@ -76,3 +76,48 @@ match diff paths); no change there.
   a question round; `[on-box]` silences it precisely per line.
 - The deploy-audit gate's pass/fail behavior is provably unchanged (pins).
 - Gate green; dist rebuilt+committed.
+
+### Success Criteria reachability (0.5.92, issue #222)
+
+The `[on-box]` convention above says where a *path* lives. This amendment says where a
+*criterion* is measured, for the same reason: a claim the target checkout cannot resolve costs
+the implementing worker a question round.
+
+A detached `/ap:implement` run on iris-cortex (2026-09-04) took a design whose Success Criteria
+required an A/B record only an a100 box accepting merged main at a pinned SHA could produce, over
+a measurement population of which 444 of 1244 ids were staged on the dev seat. Both criteria were
+unreachable by construction; the worker raised them as a first-turn objection and the hub amended
+the doc mid-run. `commands/design.md` gave Success Criteria one rule — "measurable bullets" — and
+Stage 10's walk had no success-criteria step at all; `auditDoc` checks section presence and
+placeholder markers only, so nothing looked at reachability.
+
+**The annotation.** `commands/design.md` (the fast-path Stage 2 bullet and the Stage 10 walk
+step — the same two sites the `[on-box]` convention touches): a criterion whose measurement needs
+anything beyond this run's own seat and the checkout it stands in carries
+`(measured: <seat>, <data>)` on the same line, with both confirmed reachable from this run's
+checkout, a population counted the way `components` stats its paths. The trigger is deliberately
+narrow: a criterion this seat's own test suite measures on the checkout carries nothing, so a
+single-seat design — nearly all of them — reads exactly as it does today.
+
+**The tag.** A criterion only another box, a merged-main SHA, or an unstaged population can
+produce is tagged `[deferred: <named later run>]` on the same line. `commands/implement.md`
+Stage 2 Step B gives it its consumer-side meaning in one sentence, placed where the hub meets it
+before writing the cross-verify verdict: such a bullet is outside this run's acceptance — never a
+`[spec-gap]`, never a FAIL. That is what makes the tag worth writing; without it the hub's only
+options were to chase an unmeasurable claim or to drop it silently.
+
+**No mechanical check.** Unlike the path lint, this stays directive-only. `auditDoc` issues are
+hard FAILs, and 0 of the 100 design docs under `docs/superpowers/specs/` and `docs/ap/specs/`
+carry the tag, so a gate over the annotation would reject the whole corpus; the warn-only hook
+shape the path lint uses cannot help either, since `assemble` has no way to tell a genuinely
+single-seat criterion from an unannotated cross-seat one. An opt-in consistency warn (flag a
+`(measured: …)` line whose named seat is not this box) is recorded here as a possible follow-up,
+not built. What IS pinned is that the vocabulary is inert to the existing gate: the tests assert
+`(measured: <seat>, <data>)` and `[deferred: <run>]` trip none of the four placeholder markers
+`auditDoc` flags (a doc that spelled them here would fail its own audit).
+
+Tests: `tests/design-reachability-directive.test.ts` (the Stage 2 slice's seat sentence, the
+single Stage 10 sub-bullet, and the two `auditDoc` docs — annotated PASS, a seat left as a placeholder word FAIL with
+`tbd_marker`); `tests/implement-hub-side-directive.test.ts` (the Step B sentence). MUTATION: the
+Stage 2 seat sentence deleted → 1 red with the Stage 10 assertion still green; the Stage 10
+sub-bullet deleted → 1 red; the Step B sentence deleted → 1 red; all restored → green.
