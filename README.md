@@ -24,6 +24,11 @@ pipeline drives itself in its own tmux session while your Claude Code session st
 The most recent releases, newest first. Every entry has a dated design record under
 `docs/superpowers/specs/`; the full history is `git log`.
 
+- **0.5.91 — 2026-09-06 · explore drops are not final.** `explore survivors` re-judges the full
+  roster on every run and prints `READMITTED=<agent>` for a worker whose findings landed after its
+  wait expired (refusing once Phase 4b's `open-questions.md` or Phase 4c's `diff.md` exists), so the hub never edits `list.txt` by
+  hand; a claude ultracode research turn gets four times the `research` budget automatically.
+  Closes #233.
 - **0.5.90 — 2026-09-06 · grep gates mean removal.** Every quick and bridge worker prompt now states
   that a grep-shaped acceptance check is met by removing what the pattern names, never by respelling
   or splitting a token, and that a token which must stay is reported as a gate conflict; quick's
@@ -617,7 +622,7 @@ There are **two roots**:
 
 ```
 npm run typecheck   # tsc --noEmit
-npm run test        # vitest run   (3,394 tests)
+npm run test        # vitest run   (3,399 tests)
 npm run lint        # eslint
 npm run build       # esbuild -> dist/ap.cjs  (commit the result)
 ```

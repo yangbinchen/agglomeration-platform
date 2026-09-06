@@ -415,7 +415,12 @@ export async function survivorsRun(rest: string[]): Promise<number> {
   const art = exploreArtDir(topic);
   if (!existsSync(art)) { log.error(`explore survivors: ${art} not found — run explore init`); return 1; }
   const listPath = join(art, "list.txt");
-  const rows = parseListFile(readIf(listPath));
+  const originalPath = join(art, "list-original.txt");
+  // The roster is `list-original.txt` when an earlier run rewrote the list: an earlier drop is not
+  // final — a re-run re-judges the FULL roster, so a worker whose findings landed after its wait
+  // expired is re-admitted instead of staying out because this verb already pruned it (#233).
+  const current = parseListFile(readIf(listPath));
+  const rows = parseListFile(readIf(originalPath) || readIf(listPath));
   if (rows.length === 0) { log.error(`explore survivors: list.txt missing or empty at ${art}`); return 1; }
 
   // Survivor predicate IS missingListArtifacts' readIf().trim() — reused, never re-implemented (a
@@ -432,17 +437,29 @@ export async function survivorsRun(rest: string[]): Promise<number> {
     log.error("explore survivors: zero survivors — every findings file is missing or empty");
     return 1;
   }
-  if (dropped.length === 0) {
+  const inList = new Set(current.map((r) => r.agent));
+  const readmitted = survivors.filter((r) => !inList.has(r.agent));
+  // Past Phase 4b (open-questions.md routed the roster's questions peer to peer) or Phase 4c
+  // (diff.md's buckets are first-match-wins over the worker set) the roster has been CONSUMED, so a
+  // late worker can no longer join: refuse and let the hub decide.
+  const consumed = ["open-questions.md", "diff.md"].map((f) => join(art, f)).find((p) => existsSync(p));
+  if (readmitted.length && consumed) {
+    log.error(`explore survivors: ${readmitted.map((r) => r.agent).join(", ")} would be re-admitted but Phase 4b/4c already ran (${consumed} exists) — list.txt left as is`);
+    return 1;
+  }
+  if (dropped.length === 0 && readmitted.length === 0) { // list.txt already IS the survivor set
     log.ok(`explore survivors: all ${rows.length} workers produced findings`);
     process.stdout.write(`SURVIVORS=${rows.length}\n`);
     return 0;
   }
-  const originalPath = join(art, "list-original.txt");
   if (!existsSync(originalPath)) atomicWrite(originalPath, readFileSync(listPath, "utf8")); // once — crash/retry-safe
   atomicWrite(listPath, formatListFile(survivors, isoUtc()));
-  log.warn(`explore survivors: dropped ${dropped.map((r) => r.agent).join(", ")} — ${survivors.length} of ${rows.length} continue`);
+  const tail = `${survivors.length} of ${rows.length} continue`;
+  if (dropped.length) log.warn(`explore survivors: dropped ${dropped.map((r) => r.agent).join(", ")} — ${tail}`);
+  else log.ok(`explore survivors: re-admitted ${readmitted.map((r) => r.agent).join(", ")} — ${tail}`);
   process.stdout.write(`SURVIVORS=${survivors.length}\n`);
   for (const r of dropped) process.stdout.write(`DROPPED=${r.agent}\n`);
+  for (const r of readmitted) process.stdout.write(`READMITTED=${r.agent}\n`);
   if (survivors.length === 1) process.stdout.write("DEGRADED=1\n");
   return 0;
 }

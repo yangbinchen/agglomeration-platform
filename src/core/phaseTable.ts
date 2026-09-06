@@ -47,7 +47,7 @@ import { parseListFile, lastTag } from "./roster.js";
 import { exploreArtDir } from "./explore.js";
 import { workerDir } from "./paths.js";
 import { assertSlug } from "./slug.js";
-import { consultTimeout, agentTimeoutMultiplier, type ConsultKind } from "./contracts.js";
+import { consultTimeout, agentTimeoutMultiplier, ultracodeResearchMultiplier, type ConsultKind } from "./contracts.js";
 import {
   outboxOffset, outboxPath, outboxTerminalSince, paneMetaRead, statusPath, workerBusyState,
   workerStatusReport, type Clock, type OutboxEvent,
@@ -434,7 +434,8 @@ export async function dispatchPrompt(
   return 0;
 }
 
-/** The phase-wait body, identical for all ten phases: skipped fast-path, provider-scaled timeout,
+/** The phase-wait body, identical for all ten phases: skipped fast-path, provider-scaled timeout
+ *  (x4 on a claude `research` turn — it carries `ultracode`; see ultracodeResearchMultiplier),
  *  `awaitTurn` under the artifact policy, classify, record the outcome (a question re-arms the
  *  offset instead of terminating), drop the `.done` marker the wait gate reads, log. */
 export async function phaseWait(
@@ -450,7 +451,7 @@ export async function phaseWait(
     log.ok(`${label}: ${agent} ${row.key}=skipped (already)`);
     return 0;
   }
-  const timeout = scaledTimeout(consultTimeout(row.timeoutKind), d.multiplier(provider));
+  const timeout = scaledTimeout(consultTimeout(row.timeoutKind) * ultracodeResearchMultiplier(row.timeoutKind, provider), d.multiplier(provider));
   const artifact = row.artifactFor(art, agent, provider, topic);
   // The wait itself is awaitTurn's: the offset read, the terminal selection, and the artifact
   // policy — the grace that holds a `done` open until its file is complete, whose verdict comes

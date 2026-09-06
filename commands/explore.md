@@ -32,9 +32,12 @@ Let `CS="node ${CLAUDE_PLUGIN_ROOT}/dist/ap.cjs"`.
 turn of a claude worker opts into Claude Code's multi-agent Workflow orchestration (deeper
 research; real extra token volume, and long workflow runs eat into the turn timeout). It requires
 the worker account's Workflows feature — without it the keyword is a harmless no-op. Non-claude
-providers never carry it. If the user asks for a lean/cheap run, opt out by prefixing EVERY worker
+providers never carry it. A claude ultracode research turn gets four times the `research` budget
+automatically (2400 s by default); `AP_CONSULT_TIMEOUT_RESEARCH` still overrides the base. If the
+user asks for a lean/cheap run, opt out by prefixing EVERY worker
 dispatch — each `$CS explore *-send` verb and any `$CS send --from hub …` relay — with
-`AP_ULTRACODE=0`, e.g. `AP_ULTRACODE=0 $CS explore research-send <TOPIC> <agent> <provider>`.
+`AP_ULTRACODE=0`, e.g. `AP_ULTRACODE=0 $CS explore research-send <TOPIC> <agent> <provider>`; the
+`*-wait` verbs read the same switch for the research budget, so prefix them too.
 
 ## Hub-side delegation
 
@@ -312,6 +315,10 @@ stdout:
   derives its worker set fresh from the rewritten `$ART/list.txt` (the per-phase read below);
   Phase 9 stops/archives the dropped panes from `list-original.txt`. Record it:
   `$CS explore flag <TOPIC> "survivors: dropped <agent> — empty findings"`. Continue.
+  A drop is not final: if a dropped worker's `findings-<agent>.md` lands later, run
+  `$CS explore research-wait <TOPIC> <agent> <provider>` then `$CS explore survivors <TOPIC>` again
+  — it re-judges the full roster from `list-original.txt`, prints `READMITTED=<agent>` for anyone it
+  puts back, and refuses (rc 1) once Phase 4b's `open-questions.md` or Phase 4c's `diff.md` exists. Never edit `list.txt` by hand.
 - **`DEGRADED=1`** (exactly one survivor) → DEGRADED RUN. Set tasks `4b`/`4c`/`7b`/`7c` →
   `completed` immediately (skipped: `diff` and `crossverify-send` refuse below 2 workers; rebuttal
   and gap depend on the diff buckets). Still run Phase 5 → 5b → 5.5 (S2 goes false naturally — all
@@ -320,9 +327,9 @@ stdout:
   misattribution check a single-source survey needs) → Phase 8c (the grill runs degraded too —
   drill facts route to the survivor and every settled decision is tagged `(degraded: single-source
   evidence)`) → Phase 9. Phase 9c MUST stamp the degraded
-  caveat into the handoff `## Constraints` (see Phase 9c). On a crash-recovery re-run, `SURVIVORS=1`
-  with no `DROPPED=` lines ALSO means a degraded run when `$ART/list-original.txt` exists (the verb
-  only prints `DEGRADED=1` on the run that performs the drop).
+  caveat into the handoff `## Constraints` (see Phase 9c). A crash-recovery re-run re-judges the
+  whole roster, so it re-prints the `DROPPED=` lines and `DEGRADED=1` for a drop an earlier run
+  already performed — read the current run's stdout, never `$ART/list-original.txt`'s existence.
 
 **Worker-set rule for every phase after this one:** phases 4b, 4c, 6, 7, 7b, 7c, 8b, and 8c derive
 their worker rows fresh from the CURRENT `$ART/list.txt` at dispatch time — never from the `PART=`

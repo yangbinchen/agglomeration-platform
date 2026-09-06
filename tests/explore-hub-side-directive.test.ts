@@ -34,6 +34,15 @@ describe("explore.md hub side: one delegation section, five pointers", () => {
     expect(phase10).toContain("The Conclusion body is copied by you from the archived doc; a subagent may locate the section, never supply its text.");
   });
 
+  it("a drop is reversible and the ultracode research budget is stated (#233)", () => {
+    const phase4a = slice("## Phase 4a — survivors", "## Phase 4b");
+    expect(phase4a).toContain("prints `READMITTED=<agent>` for anyone it puts back");
+    expect(phase4a).toContain("refuses (rc 1) once Phase 4b's `open-questions.md` or Phase 4c's `diff.md` exists");
+    expect(phase4a).toContain("Never edit `list.txt` by hand.");
+    expect(slice("## Ultracode workers", "## Hub-side delegation"))
+      .toContain("gets four times the `research` budget automatically (2400 s by default)");
+  });
+
   it("the frozen retrieval boundary is untouched", () => {
     expect(doc).toContain("**The Hub itself never runs retrieval — workers are the only retrievers.**");
   });

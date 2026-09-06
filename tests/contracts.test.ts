@@ -163,3 +163,15 @@ describe("contracts", () => {
     expect(K.agentReadyTimeout("codex")).toBe(90);          // shipped wins, shadow ignored
   });
 });
+
+// #233: a claude worker's nudge carries `ultracode` by default, and that research turn routinely
+// outruns the 600s base — the multiplier is what makes 2400s the default budget.
+describe("ultracodeResearchMultiplier", () => {
+  it("4 only for a claude research turn; AP_ULTRACODE=0 opts out", () => {
+    expect(K.ultracodeResearchMultiplier("research", "claude", {})).toBe(4);
+    expect(K.ultracodeResearchMultiplier("research", "claude", { AP_ULTRACODE: "1" })).toBe(4);
+    expect(K.ultracodeResearchMultiplier("research", "claude", { AP_ULTRACODE: "0" })).toBe(1);
+    expect(K.ultracodeResearchMultiplier("research", "codex", {})).toBe(1);
+    expect(K.ultracodeResearchMultiplier("verify", "claude", {})).toBe(1);
+  });
+});

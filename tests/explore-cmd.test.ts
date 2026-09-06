@@ -536,13 +536,20 @@ describe("explore phase send/wait skeleton (table-driven over PHASES)", () => {
       });
 
       it(`the wait budget is contracts' ${row.timeoutKind} timeout, provider-scaled`, async () => {
-        writeFileSync(stateFile(), "OFFSET=0\n");
         let got = -1;
-        await phaseWait(row, TOPIC, AGENT, PROVIDER, waitDeps({
-          multiplier: () => "2",
-          wait: async (_i, _m, _t, _off, _ev, to) => { got = to; return null; },
-        }));
+        const budget = (agent: string, provider: string) => {
+          writeFileSync(stateFile(agent), "OFFSET=0\n");
+          return phaseWait(row, TOPIC, agent, provider, waitDeps({
+            multiplier: () => "2",
+            wait: async (_i, _m, _t, _off, _ev, to) => { got = to; return null; },
+          }));
+        };
+        await budget(AGENT, PROVIDER);
         expect(got).toBe(scaledTimeout(consultTimeout(row.timeoutKind), "2"));
+        // #233: a claude worker's nudge carries `ultracode`, so its RESEARCH turn gets 4x the base
+        // budget — every other kind, and every other provider, is untouched.
+        await budget("charlie", "claude");
+        expect(got).toBe(scaledTimeout(consultTimeout(row.timeoutKind) * (row.timeoutKind === "research" ? 4 : 1), "2"));
       });
     });
   }
@@ -1273,6 +1280,64 @@ describe("explore survivors", () => {
       const out = captureStdout();
       try { expect(await survivorsRun(["x"])).toBe(0); } finally { out.restore(); }
       expect(readFileSync(join(art, "list-original.txt"), "utf8")).toContain("SENTINEL");
+    } finally { cleanup(); }
+  });
+
+  it("a dropped worker whose findings land later is re-admitted on a re-run", async () => {
+    const { cleanup } = freshHome();
+    try {
+      await initWith(["x"], initDeps());
+      const art = exploreArtDir("x");
+      writeFileSync(join(art, "findings-alpha.md"), complete("a")); // charlie missing
+      const first = captureStdout();
+      try { expect(await survivorsRun(["x"])).toBe(0); } finally { first.restore(); }
+      expect(first.text().trim().split("\n")).toEqual(["SURVIVORS=1", "DROPPED=charlie", "DEGRADED=1"]);
+      const original = readFileSync(join(art, "list-original.txt"), "utf8");
+
+      writeFileSync(join(art, "findings-charlie.md"), complete("c")); // the late findings land
+      const out = captureStdout();
+      try { expect(await survivorsRun(["x"])).toBe(0); } finally { out.restore(); }
+      expect(out.text().trim().split("\n")).toEqual(["SURVIVORS=2", "READMITTED=charlie"]);
+      const relisted = readFileSync(join(art, "list.txt"), "utf8");
+      expect(relisted).toContain("codex\talpha");
+      expect(relisted).toContain("claude\tcharlie");
+      expect(readFileSync(join(art, "list-original.txt"), "utf8")).toBe(original); // byte-unchanged
+    } finally { cleanup(); }
+  });
+
+  it("re-admit is refused once diff.md exists", async () => {
+    const { cleanup } = freshHome();
+    try {
+      await initWith(["x"], initDeps());
+      const art = exploreArtDir("x");
+      writeFileSync(join(art, "findings-alpha.md"), complete("a"));
+      const first = captureStdout();
+      try { expect(await survivorsRun(["x"])).toBe(0); } finally { first.restore(); }
+      const pruned = readFileSync(join(art, "list.txt"), "utf8");
+
+      writeFileSync(join(art, "findings-charlie.md"), complete("c"));
+      writeFileSync(join(art, "diff.md"), "## Agreed\n"); // Phase 4c already consumed the roster
+      const out = captureStdout();
+      try { expect(await survivorsRun(["x"])).toBe(1); } finally { out.restore(); }
+      expect(readFileSync(join(art, "list.txt"), "utf8")).toBe(pruned);
+    } finally { cleanup(); }
+  });
+
+  it("re-admit is refused once open-questions.md exists (Phase 4b consumed the roster first)", async () => {
+    const { cleanup } = freshHome();
+    try {
+      await initWith(["x"], initDeps());
+      const art = exploreArtDir("x");
+      writeFileSync(join(art, "findings-alpha.md"), complete("a"));
+      const first = captureStdout();
+      try { expect(await survivorsRun(["x"])).toBe(0); } finally { first.restore(); }
+      const pruned = readFileSync(join(art, "list.txt"), "utf8");
+
+      writeFileSync(join(art, "findings-charlie.md"), complete("c"));
+      writeFileSync(join(art, "open-questions.md"), "# open questions\n"); // Phase 4b routed the roster's questions
+      const out = captureStdout();
+      try { expect(await survivorsRun(["x"])).toBe(1); } finally { out.restore(); }
+      expect(readFileSync(join(art, "list.txt"), "utf8")).toBe(pruned);
     } finally { cleanup(); }
   });
 

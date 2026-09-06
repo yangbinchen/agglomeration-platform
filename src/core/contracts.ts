@@ -91,4 +91,14 @@ export function consultTimeout(kind: ConsultKind): number {
   return POSITIVE_INT.test(String(v)) ? Number(v) : CONSULT_DEFAULTS[kind];
 }
 
+/** Extra budget a claude RESEARCH turn gets because its nudge carries `ultracode` by default (see
+ *  send.ts `taskNudge`): the Workflow orchestration routinely outruns the 600 s `research` default,
+ *  and issue #233 lost a worker's findings that way — they landed only after the hub re-armed the
+ *  wait with AP_CONSULT_TIMEOUT_RESEARCH=2400. 4 makes that the default (2400 s = 4 x 600).
+ *  Multiplies whatever `consultTimeout("research")` resolved, so the env/contracts knobs still set
+ *  the base; `AP_ULTRACODE=0` (the nudge's own opt-out, exactly "0") drops it back to 1. */
+export function ultracodeResearchMultiplier(kind: ConsultKind, provider: string, env: NodeJS.ProcessEnv = process.env): number {
+  return kind === "research" && provider === "claude" && env.AP_ULTRACODE !== "0" ? 4 : 1;
+}
+
 export function contractsExist(): boolean { return existsSync(contractsPath()); }

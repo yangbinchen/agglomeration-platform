@@ -14,8 +14,9 @@ Let `CS="node ${CLAUDE_PLUGIN_ROOT}/dist/ap.cjs"`.
 
 > **Claude** workers' task nudges carry the `ultracode` keyword by default — each dispatched turn
 > opts into Claude Code's multi-agent Workflow orchestration (deeper work, more tokens; a harmless
-> no-op without the Workflows feature). For a lean run, prefix every worker dispatch with
-> `AP_ULTRACODE=0`.
+> no-op without the Workflows feature). A claude ultracode research turn gets four times the
+> `research` budget automatically (2400 s by default); `AP_CONSULT_TIMEOUT_RESEARCH` still overrides
+> the base. For a lean run, prefix every worker dispatch and every `*-wait` with `AP_ULTRACODE=0`.
 
 ## Progress tracking
 

@@ -8357,6 +8357,9 @@ function consultTimeout(kind) {
   const v = (load().consult ?? {})[`${kind}_timeout_s`];
   return POSITIVE_INT.test(String(v)) ? Number(v) : CONSULT_DEFAULTS[kind];
 }
+function ultracodeResearchMultiplier(kind, provider, env = process.env) {
+  return kind === "research" && provider === "claude" && env.AP_ULTRACODE !== "0" ? 4 : 1;
+}
 function contractsExist() {
   return (0, import_node_fs7.existsSync)(contractsPath());
 }
@@ -13911,7 +13914,7 @@ async function phaseWait(row, topic, agent, provider, d) {
     log.ok(`${label}: ${agent} ${row.key}=skipped (already)`);
     return 0;
   }
-  const timeout = scaledTimeout(consultTimeout(row.timeoutKind), d.multiplier(provider));
+  const timeout = scaledTimeout(consultTimeout(row.timeoutKind) * ultracodeResearchMultiplier(row.timeoutKind, provider), d.multiplier(provider));
   const artifact = row.artifactFor(art, agent, provider, topic);
   const r = await awaitTurn({
     agent,
@@ -23597,7 +23600,9 @@ async function survivorsRun(rest) {
     return 1;
   }
   const listPath = (0, import_node_path51.join)(art, "list.txt");
-  const rows = parseListFile(readIfExists(listPath));
+  const originalPath = (0, import_node_path51.join)(art, "list-original.txt");
+  const current = parseListFile(readIfExists(listPath));
+  const rows = parseListFile(readIfExists(originalPath) || readIfExists(listPath));
   if (rows.length === 0) {
     log.error(`explore survivors: list.txt missing or empty at ${art}`);
     return 1;
@@ -23611,19 +23616,29 @@ async function survivorsRun(rest) {
     log.error("explore survivors: zero survivors \u2014 every findings file is missing or empty");
     return 1;
   }
-  if (dropped.length === 0) {
+  const inList = new Set(current.map((r) => r.agent));
+  const readmitted = survivors.filter((r) => !inList.has(r.agent));
+  const consumed = ["open-questions.md", "diff.md"].map((f) => (0, import_node_path51.join)(art, f)).find((p) => (0, import_node_fs50.existsSync)(p));
+  if (readmitted.length && consumed) {
+    log.error(`explore survivors: ${readmitted.map((r) => r.agent).join(", ")} would be re-admitted but Phase 4b/4c already ran (${consumed} exists) \u2014 list.txt left as is`);
+    return 1;
+  }
+  if (dropped.length === 0 && readmitted.length === 0) {
     log.ok(`explore survivors: all ${rows.length} workers produced findings`);
     process.stdout.write(`SURVIVORS=${rows.length}
 `);
     return 0;
   }
-  const originalPath = (0, import_node_path51.join)(art, "list-original.txt");
   if (!(0, import_node_fs50.existsSync)(originalPath)) atomicWrite(originalPath, (0, import_node_fs50.readFileSync)(listPath, "utf8"));
   atomicWrite(listPath, formatListFile(survivors, isoUtc()));
-  log.warn(`explore survivors: dropped ${dropped.map((r) => r.agent).join(", ")} \u2014 ${survivors.length} of ${rows.length} continue`);
+  const tail = `${survivors.length} of ${rows.length} continue`;
+  if (dropped.length) log.warn(`explore survivors: dropped ${dropped.map((r) => r.agent).join(", ")} \u2014 ${tail}`);
+  else log.ok(`explore survivors: re-admitted ${readmitted.map((r) => r.agent).join(", ")} \u2014 ${tail}`);
   process.stdout.write(`SURVIVORS=${survivors.length}
 `);
   for (const r of dropped) process.stdout.write(`DROPPED=${r.agent}
+`);
+  for (const r of readmitted) process.stdout.write(`READMITTED=${r.agent}
 `);
   if (survivors.length === 1) process.stdout.write("DEGRADED=1\n");
   return 0;
