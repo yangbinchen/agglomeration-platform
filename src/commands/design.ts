@@ -147,7 +147,7 @@ async function assembleRun(rest: string[]): Promise<number> {
   // Warn-only path lint: a phantom Components path costs a worker question round later, so name it
   // here. The audit below owns the verdict — this loop never changes it.
   for (const p of lintComponentsPaths(doc, repoRoot())) {
-    log.warn(`design assemble: Components path not found in this checkout: ${p} — mark it [on-box] if it is deliberately box-local, or fix the path`);
+    log.warn(`design assemble: Components path not found in this checkout: ${p} — mark it [on-box] if it is deliberately box-local, label it (new — does not exist yet) if this design creates it, or fix the path`);
   }
 
   const result = auditDoc(doc);

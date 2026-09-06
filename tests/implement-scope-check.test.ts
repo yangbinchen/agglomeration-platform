@@ -178,6 +178,58 @@ describe("implement scope-check (single-repo path locked)", () => {
     h.cleanup();
   });
 
+  // ---- 2026-09-06-scope-path-normalization-design.md (#208) ----
+  // The field failure: the design spelled its Components paths ABSOLUTE under the checkout, exactly
+  // as the directives instruct, while `git diff --name-only` is repo-relative. Every declared path
+  // read out-of-scope (OOS_COUNT=16 on a fully declared diff).
+  it("an ABSOLUTE Components path matches its repo-relative diff path (OOS_COUNT=0, SCOPE_RELATIVIZED=1)", async () => {
+    const h = freshHome();
+    const art = implementArtDir("scope-abs");
+    mkdirSync(art, { recursive: true });
+    const mainRoot = "/repo/main";
+    writeFileSync(join(art, "target_cwd.txt"), `${mainRoot}\n`);
+    writeFileSync(join(art, "branch-base.sha"), "BASE\n");
+    // Two declarations, one absolute and one relative, in DIFFERENT directories so the same-dir
+    // sibling rule cannot mask the fix.
+    writeFileSync(join(art, "design.md"),
+      `# d\n\n## Components\n\n- \`${mainRoot}/src/core/provision.ts\` — the provisioner\n- \`commands/quick.md\` — the directive\n`);
+    const deps = {
+      runnerFor: (_cwd: string): Runner => ({
+        run: (): RunResult => ({ code: 0, stdout: "src/core/provision.ts\ncommands/quick.md\n" }),
+      }),
+    };
+    const { rc, out } = await capture(() => scopeCheckWith("scope-abs", deps));
+    expect(rc).toBe(0);
+    // Mutations that turn this red: match against `declaredPaths` alone -> OOS_COUNT=1; substitute
+    // `rel` for `declaredPaths` instead of appending -> OOS_COUNT=1 (commands/quick.md drops out).
+    expect(out).toContain("OOS_COUNT=0\n");
+    expect(readFileSync(join(art, "scope-out-of-scope.txt"), "utf8")).toBe("");
+    // Append-only: the declared count is the DECLARED set, not the widened matcher input.
+    // Mutation: count `rel` in SCOPE_DECLARED -> 3.
+    expect(out).toContain("SCOPE_DECLARED=2\nTESTING_DECLARED=0\n");
+    expect(out).toContain("SCOPE_RELATIVIZED=1\n");
+    // The artifact keeps the ABSOLUTE token verbatim: report, never filter.
+    expect(readFileSync(join(art, "components-paths.txt"), "utf8"))
+      .toBe(`${mainRoot}/src/core/provision.ts\ncommands/quick.md\n`);
+    h.cleanup();
+  });
+
+  it("a `:line` suffix on a declared path is ignored (OOS_COUNT=0, SCOPE_UNRESOLVED=0)", async () => {
+    const h = freshHome();
+    const art = implementArtDir("scope-lineref");
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, "target_cwd.txt"), "/repo/main\n");
+    writeFileSync(join(art, "branch-base.sha"), "BASE\n");
+    writeFileSync(join(art, "design.md"), "# d\n\n## Components\n\n- `src/a.ts:42` — the guard\n");
+    const deps = { runnerFor: (_cwd: string): Runner => ({ run: (): RunResult => ({ code: 0, stdout: "src/a.ts\n" }) }) };
+    const { rc, out } = await capture(() => scopeCheckWith("scope-lineref", deps));
+    expect(rc).toBe(0);
+    expect(out).toContain("OOS_COUNT=0\n");
+    expect(out).toContain("SCOPE_UNRESOLVED=0\n");
+    expect(readFileSync(join(art, "components-paths.txt"), "utf8")).toBe("src/a.ts\n");
+    h.cleanup();
+  });
+
   it("same-dir siblings of an exact-file Components entry are in scope (OOS_COUNT=0)", async () => {
     const h = freshHome();
     const art = implementArtDir("scope-sibling");

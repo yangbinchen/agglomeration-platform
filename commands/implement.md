@@ -902,7 +902,8 @@ bundle, so it must be evidence and not recall:
 - **Every number arrives with the command that produced it**, pasted from a run you did, or expressed
   as a command for the worker to run — never as a prediction. A predicted delta that the run does not
   reproduce reads to the worker as a regression it must chase.
-- **Anything the fix is meant to CREATE is labelled `(new — does not exist yet)`.**
+- **Anything the fix is meant to CREATE is labelled `(new — does not exist yet)`** — the audit's
+  existence check skips a line carrying that label.
 - **Gathering the evidence is grind; the bundle is yours.** The stats, greps and measuring commands
   may go to subagents with an explicit cheaper model where your own instructions define that split;
   every path, number and environment fact the bundle cites stays first-hand — a subagent may
@@ -925,15 +926,19 @@ Then `ROUND=$((ROUND+1))`, `RETRY=0`, and loop back to Stage 1.
 
 1. **Scope conformance.** `$CS implement scope-check <TOPIC>` (writes `scope-out-of-scope.txt` and
    `scope-unresolved.txt`, prints `SCOPE_DECLARED=`/`TESTING_DECLARED=`/`OOS_COUNT=`/`OOS_PATH=`/
-   `SCOPE_UNRESOLVED=`/`TESTING_UNRESOLVED=`). Paths named in the design's Testing section count as
-   declared scope alongside Components paths. Weigh `OOS_COUNT` against the declared counts NET of
+   `SCOPE_UNRESOLVED=`/`TESTING_UNRESOLVED=`/`SCOPE_RELATIVIZED=`). Paths named in the design's
+   Testing section count as declared scope alongside Components paths.
+   Weigh `OOS_COUNT` against the declared counts NET of
    the unresolved ones: `SCOPE_UNRESOLVED=`/`TESTING_UNRESOLVED=` count the declared tokens
    (Components / Testing) that name neither a file nor a trailing-`/` directory — slash-bearing prose
    like `Spec/metrics`, listed in `scope-unresolved.txt`. A high unresolved share means the declared
    number is prose, not scope: the design declares less than the count suggests, so prefer *Amend*
    over *Force-keep*. They are a REPORT — every declared token still counts as scope, so the OOS
    verdict is unaffected — and a bare `src/core` (a legal implicit-directory declaration) is reported
-   unresolved too. If `SCOPE_DECLARED=0`, the
+   unresolved too. A declared path written absolute under the target or the main checkout is matched
+   by its repo-relative form (`SCOPE_RELATIVIZED=` counts them), so an absolute-citation design no
+   longer reads as a whole-diff OOS; a `:line` suffix on a declared path is ignored.
+   If `SCOPE_DECLARED=0`, the
    design declared no parseable scope paths, so the OOS list is the entire diff — a guard **no-op**,
    not a real finding; prefer *Amend* (add a real Components table) and do NOT *Force-keep* the no-op. Otherwise,
    if `OOS_COUNT > 0`, read the file and **AskUserQuestion** ("Amend the design / Send back to the
